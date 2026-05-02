@@ -1,0 +1,14 @@
+pydantic
+langchain
+langchain_groq
+python-dotenv
+langgraph
+langchain_cohere
+langchain_community
+pypdf
+faiss-cpu
+rank_bm25
+streamlit
+langchain_google_genai
+google-genai
+cohere>=5.12.0,<5.16
