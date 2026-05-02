@@ -1,0 +1,39 @@
+# Ignore Streamlit secrets
+.streamlit/secrets.toml
+
+test.ipynb
+test1.ipynb
+contract.pdf
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+test.py
+check_retrivers.py
+# Virtual environments
+venv/
+env/
+myenv/
+
+# Environment variable files
+.env
+.env.*
+
+# VS Code settings (optional)
+.vscode/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
