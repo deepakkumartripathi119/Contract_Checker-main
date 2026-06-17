@@ -217,7 +217,7 @@ else:
         uploaded_file = st.file_uploader(
             "Upload PDF (Clause Extraction Only)", type="pdf", key="extractor"
         )
-
+## just checking the git is working or not, ignore this change
         if uploaded_file:
             try:
                 reader = PdfReader(uploaded_file)
