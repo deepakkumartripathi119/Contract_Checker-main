@@ -31,7 +31,7 @@ google_api_key = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
 #     temperature=0,
 # )
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite-preview-06-17",
+    model="gemini-3.8-flash",
     google_api_key=google_api_key,  # Replace with your API key
     temperature=0.0,
 )
@@ -48,12 +48,12 @@ client = genai.Client(api_key=google_api_key)
 # )
 
 model = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.8-flash",
     google_api_key=google_api_key,  # Replace with your API key
     temperature=0.7,
 )
 llm_q = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
+    model="gemini-3.8-flash",
     google_api_key=google_api_key,  # Replace with your API key
     temperature=0.7,
 )
