@@ -27,10 +27,10 @@ class ClauseComplianceResult(BaseModel):
         ...,
         description="List of clauses from the internal policies, each with its source formatted as: 'clause text — `source`'.",
     )
-    # suggested_revision: Optional[str] = Field(
-    #     None,
-    #     description="Suggested revision if the clause is not compliant. keep this short and to the point",
-    # )
+    suggested_revision: Optional[str] = Field(
+        default=None,
+        description="Suggested revision if the clause is not compliant. keep this short and to the point",
+    )
 
 
 class Clause(BaseModel):

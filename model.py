@@ -21,46 +21,30 @@ if not st.secrets:
 
 groq_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
 google_api_key = st.secrets.get("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
-# llm = ChatGroq(
-#     api_key=groq_key,
-#     # model="llama-3.1-8b-instant"
-#     # model="llama-3.3-70b-versatile",
-#     model="meta-llama/llama-4-scout-17b-16e-instruct",
-#     # model="deepseek-r1-distill-llama-70b",
-#     # model="mistral-saba-24b",
-#     temperature=0,
-# )
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.8-flash",
-    google_api_key=google_api_key,  # Replace with your API key
-    temperature=0.0,
+
+# Groq LLMs with high throughput & RPM
+llm = ChatGroq(
+    api_key=groq_key,
+    model="qwen/qwen3.8-27b",
+    temperature=0,
 )
-client = genai.Client(api_key=google_api_key)
 
-# llm_m = ChatGroq(
-#     api_key=groq_key,
-#     # model="llama-3.1-8b-instant"
-#     # model="llama-3.3-70b-versatile",
-#     model="meta-llama/llama-4-maverick-17b-128e-instruct",
-#     # model="deepseek-r1-distill-llama-70b",
-#     # model="mistral-saba-24b",
-#     temperature=0,
-# )
-
-model = ChatGoogleGenerativeAI(
-    model="gemini-3.8-flash",
-    google_api_key=google_api_key,  # Replace with your API key
+model = ChatGroq(
+    api_key=groq_key,
+    model="qwen/qwen3.8-27b",
     temperature=0.7,
 )
-llm_q = ChatGoogleGenerativeAI(
-    model="gemini-3.8-flash",
-    google_api_key=google_api_key,  # Replace with your API key
+
+llm_q = ChatGroq(
+    api_key=groq_key,
+    model="qwen/qwen3.8-27b",
     temperature=0.7,
 )
+
+client = genai.Client(api_key=google_api_key) if google_api_key else None
+
 extract_clause_llm = llm.with_structured_output(ExtractedClauses)
-
 query_generator_llm = llm_q.with_structured_output(query)
-
 compliance_model = model.with_structured_output(ClauseComplianceResult)
 
 # test_model = llm.with_structured_output(ClauseComplianceResult)
