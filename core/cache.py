@@ -1,0 +1,355 @@
+r"""
+core/cache.py — Provider-agnostic Two-Tier Cache abstraction.
+
+Architecture
+------------
+CacheBackend (ABC)
+  └─ SQLiteCache   ← current default (CACHE_BACKEND=sqlite)
+  └─ RedisCache    ← future  (CACHE_BACKEND=redis)
+
+Two-Tier Cache Hierarchy
+------------------------
+Tier 1: SHA256 Exact-Match (<1ms, $0 LLM cost)
+  - Key: SHA256(org_id + ":" + normalized(clause_text))
+  - Catches repeated standard/boilerplate clauses.
+
+Tier 2: Semantic Cosine Match (with Guardrails)
+  - Compares cosine similarity of clause embeddings (threshold >= 0.95).
+  - CRITICAL GUARDS to prevent false semantic equivalence:
+    1. Numeric Guard: Extracts all numbers (\b\d+(?:\.\d+)?\b). If numbers differ
+       (e.g., "30 days" vs "90 days"), the match is REJECTED.
+    2. Negation Guard: Detects negation polarities (e.g., "shall indemnify" vs
+       "shall not indemnify"). If polarities differ, the match is REJECTED.
+
+Invalidation
+------------
+Calling invalidate(org_id) evicts all cached entries when an organisation
+updates their policy documents.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import sqlite3
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+
+_NEGATION_TOKENS = {
+    "not", "no", "never", "neither", "nor", "none", "without",
+    "except", "excluding", "cannot", "prohibited", "disallowed",
+    "unauthorized", "refuse", "deny",
+}
+
+
+# ---------------------------------------------------------------------------
+# Abstract interface
+# ---------------------------------------------------------------------------
+
+class CacheBackend(ABC):
+    """
+    Key-value and semantic cache for compliance verdicts.
+    """
+
+    @abstractmethod
+    def get(self, key: str) -> Optional[dict]:
+        """Direct exact lookup by key."""
+
+    @abstractmethod
+    def set(self, key: str, value: dict) -> None:
+        """Direct exact store by key."""
+
+    @abstractmethod
+    def get_verdict(
+        self,
+        clause_text: str,
+        org_id: str,
+        embedding: Optional[list[float]] = None,
+        threshold: float = 0.95,
+    ) -> Optional[dict]:
+        """
+        Two-tier lookup: Tier-1 exact match, then Tier-2 semantic match with guards.
+        """
+
+    @abstractmethod
+    def set_verdict(
+        self,
+        org_id: str,
+        clause_text: str,
+        verdict: dict,
+        embedding: Optional[list[float]] = None,
+    ) -> None:
+        """Store verdict under exact key and persist embedding for semantic tier."""
+
+    @abstractmethod
+    def invalidate(self, org_id: str) -> None:
+        """Evict all cache entries for an org (called when policy is updated)."""
+
+    @staticmethod
+    def normalize_text(text: str) -> str:
+        """Normalize text: strip, lowercase, collapse whitespace."""
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    @staticmethod
+    def make_key(clause_text: str, org_id: str) -> str:
+        """SHA256(org_id + ":" + normalize(clause_text))."""
+        norm = re.sub(r"\s+", " ", clause_text.strip().lower())
+        payload = f"{org_id}:{norm}".encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def extract_numbers(text: str) -> list[str]:
+        """Extract all numeric tokens for the numeric guard."""
+        return re.findall(r"\b\d+(?:\.\d+)?\b", text)
+
+    @staticmethod
+    def extract_negations(text: str) -> set[str]:
+        """Extract all negation tokens for the negation polarity guard."""
+        tokens = set(re.findall(r"\w+", text.lower()))
+        return tokens.intersection(_NEGATION_TOKENS)
+
+
+# ---------------------------------------------------------------------------
+# SQLite implementation
+# ---------------------------------------------------------------------------
+
+_CREATE_CACHE_TABLE = """
+CREATE TABLE IF NOT EXISTS compliance_cache (
+    cache_key     TEXT PRIMARY KEY,
+    org_id        TEXT NOT NULL,
+    clause_text   TEXT NOT NULL,
+    value         TEXT NOT NULL,
+    embedding     BLOB,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cache_org ON compliance_cache(org_id);
+"""
+
+
+class SQLiteCache(CacheBackend):
+    """
+    SQLite-backed two-tier cache with exact SHA256 and semantic cosine matching.
+    """
+
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or os.getenv(
+            "SQLITE_DB_PATH",
+            str(Path(__file__).resolve().parents[1] / "data" / "contract_checker.db"),
+        )
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        if self.db_path == ":memory:":
+            if not hasattr(self, "_mem_conn") or self._mem_conn is None:
+                self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
+                self._mem_conn.row_factory = sqlite3.Row
+            return self._mem_conn
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.executescript(_CREATE_CACHE_TABLE)
+            # Automatic schema migration for existing databases
+            cursor = conn.execute("PRAGMA table_info(compliance_cache)")
+            columns = {row["name"] for row in cursor.fetchall()}
+            if "clause_text" not in columns:
+                conn.execute("ALTER TABLE compliance_cache ADD COLUMN clause_text TEXT NOT NULL DEFAULT ''")
+            if "embedding" not in columns:
+                conn.execute("ALTER TABLE compliance_cache ADD COLUMN embedding BLOB")
+
+    @staticmethod
+    def _embed_to_blob(embedding: list[float]) -> bytes:
+        return np.array(embedding, dtype=np.float32).tobytes()
+
+    @staticmethod
+    def _blob_to_embed(blob: bytes) -> np.ndarray:
+        return np.frombuffer(blob, dtype=np.float32)
+
+    @staticmethod
+    def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+        denom = np.linalg.norm(a) * np.linalg.norm(b)
+        if denom == 0:
+            return 0.0
+        return float(np.dot(a, b) / denom)
+
+    # ------------------------------------------------------------------
+    # CacheBackend interface
+    # ------------------------------------------------------------------
+
+    def get(self, key: str) -> Optional[dict]:
+        """Direct exact lookup by key."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM compliance_cache WHERE cache_key = ?", (key,)
+            ).fetchone()
+        return json.loads(row["value"]) if row else None
+
+    def set(self, key: str, value: dict) -> None:
+        """Direct store under exact key."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO compliance_cache
+                  (cache_key, org_id, clause_text, value, embedding)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    value.get("org_id", "default"),
+                    value.get("clause_text", ""),
+                    json.dumps(value),
+                    None,
+                ),
+            )
+
+    def get_verdict(
+        self,
+        clause_text: str,
+        org_id: str,
+        embedding: Optional[list[float]] = None,
+        threshold: float = 0.95,
+    ) -> Optional[dict]:
+        """
+        Two-tier lookup:
+        1. Tier 1: SHA256 exact match on normalized clause text.
+        2. Tier 2: Semantic cosine match with numeric-value and negation guards.
+        """
+        if not clause_text or not clause_text.strip():
+            return None
+
+        key = self.make_key(clause_text, org_id)
+
+        # --- Tier 1: Exact Match (<1ms) ---
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value, clause_text FROM compliance_cache WHERE cache_key = ?",
+                (key,),
+            ).fetchone()
+
+        if row:
+            res = json.loads(row["value"])
+            res["cached"] = True
+            res["cache_tier"] = "tier1_exact"
+            return res
+
+        # --- Tier 2: Semantic Match with Guardrails ---
+        if embedding is None:
+            return None
+
+        qvec = np.array(embedding, dtype=np.float32)
+        q_nums = self.extract_numbers(clause_text)
+        q_negs = self.extract_negations(clause_text)
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT cache_key, clause_text, value, embedding
+                FROM   compliance_cache
+                WHERE  org_id = ? AND embedding IS NOT NULL
+                """,
+                (org_id,),
+            ).fetchall()
+
+        if not rows:
+            return None
+
+        candidates: list[tuple[float, str, dict]] = []
+        for r in rows:
+            vec = self._blob_to_embed(r["embedding"])
+            sim = self._cosine(qvec, vec)
+            if sim >= threshold:
+                candidates.append((sim, r["clause_text"], json.loads(r["value"])))
+
+        if not candidates:
+            return None
+
+        # Sort candidates descending by similarity
+        candidates.sort(key=lambda x: x[0], reverse=True)
+
+        for sim, cand_text, verdict in candidates:
+            # 1. Numeric Guard: If numbers differ (e.g. 30 vs 90 days), reject match
+            c_nums = self.extract_numbers(cand_text)
+            if q_nums != c_nums:
+                continue
+
+            # 2. Negation Guard: If negation polarity differs, reject match
+            c_negs = self.extract_negations(cand_text)
+            if bool(q_negs) != bool(c_negs) or q_negs != c_negs:
+                continue
+
+            # Match accepted!
+            verdict["cached"] = True
+            verdict["cache_tier"] = "tier2_semantic"
+            verdict["cache_similarity"] = round(sim, 4)
+            # Update clause_text to the query clause for report consistency
+            verdict["clause_text"] = clause_text
+            return verdict
+
+        return None
+
+    def set_verdict(
+        self,
+        org_id: str,
+        clause_text: str,
+        verdict: dict,
+        embedding: Optional[list[float]] = None,
+    ) -> None:
+        """Store verdict with both exact key and optional embedding for semantic tier."""
+        if not clause_text or not clause_text.strip():
+            return
+
+        key = self.make_key(clause_text, org_id)
+        blob = self._embed_to_blob(embedding) if embedding else None
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO compliance_cache
+                  (cache_key, org_id, clause_text, value, embedding)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    org_id,
+                    clause_text,
+                    json.dumps(verdict),
+                    blob,
+                ),
+            )
+
+    def invalidate(self, org_id: str) -> None:
+        """Evict all cached entries for an org (called on policy document re-upload)."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM compliance_cache WHERE org_id = ?", (org_id,))
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def get_cache() -> CacheBackend:
+    """Return the configured cache backend (controlled by CACHE_BACKEND env var)."""
+    backend = os.getenv("CACHE_BACKEND", "sqlite").lower()
+
+    if backend == "sqlite":
+        db_path = os.getenv("SQLITE_DB_PATH")
+        return SQLiteCache(db_path=db_path)
+
+    if backend == "redis":
+        raise NotImplementedError(
+            "Redis cache backend is not yet implemented. Set CACHE_BACKEND=sqlite."
+        )
+
+    raise ValueError(
+        f"Unknown CACHE_BACKEND='{backend}'. Supported values: sqlite, redis"
+    )

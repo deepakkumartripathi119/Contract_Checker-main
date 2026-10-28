@@ -1,0 +1,385 @@
+# Implementation Roadmap: Modern RAG Pipeline
+
+> **Goal:** Strong engineering portfolio piece that could become a product.  
+> **LLM:** Provider-agnostic (abstract behind an interface).  
+> **Rule:** No code changes until you approve this plan.
+
+---
+
+## Phase 0 — Cleanup, Bug Fixes & Provider Abstraction
+**Why first:** Everything else builds on clean foundations. Can't modernize a codebase with dead code, trailing-space bugs, and random clause dropping.
+
+### Task 0.1: Fix the trailing-space `COHERE_API_KEY` bug
+- **File:** [retriever.py L21](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/retriever.py#L21)
+- **Bug:** `os.getenv("COHERE_API_KEY ")` — trailing space means it silently returns `None`
+- **Fix:** Change to `os.getenv("COHERE_API_KEY")`
+- **Also in:** [RAG.py L21](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/RAG.py#L21) (dead code, but fix before deleting)
+
+### Task 0.2: Delete dead code files
+- **Delete:** [RAG.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/RAG.py) — not imported by any active code
+- **Delete:** [Retrivers.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/Retrivers.py) — imports from dead `RAG.py`
+- **Verify:** Run `grep -r "from RAG import\|import RAG\|from Retrivers\|import Retrivers" *.py` to confirm nothing imports them
+
+### Task 0.3: Remove random clause dropping
+- **File:** [clause_sender.py L9-10](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/clause_sender.py#L9-L10)
+- **Current:** `random.sample(clauses, min(5, len(clauses)))`
+- **Fix:** Send ALL clauses: `return [Send("SubGraph", {"clause": clause}) for clause in clauses]`
+- **Note:** We'll add `max_concurrency` in Phase 3 to prevent rate limits — but we stop randomly ignoring clauses NOW
+
+### Task 0.4: Rename typo files
+- **Rename:** `Compiliance_checker.py` → `compliance_checker.py`
+- **Update imports in:** [subgraph.py L5](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/subgraph.py#L5)
+
+### Task 0.5: Create provider-agnostic LLM abstraction
+- **File:** Refactor [model.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/model.py)
+- **Current problem:** 3 hardcoded `ChatGroq` instances with mixed temperatures, plus an unused `genai.Client`
+- **New design:**
+```python
+# model.py — Provider-agnostic LLM factory
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")  # "groq" | "gemini" | "openai"
+
+def get_llm(temperature: float = 0.0):
+    """Returns an LLM client based on the configured provider."""
+    if LLM_PROVIDER == "groq":
+        from langchain_groq import ChatGroq
+        return ChatGroq(model=os.getenv("LLM_MODEL", "qwen/qwen3.8-27b"), temperature=temperature)
+    elif LLM_PROVIDER == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(model=os.getenv("LLM_MODEL", "gemini-2.0-flash"), temperature=temperature)
+    else:
+        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
+
+def get_embedding_model():
+    """Returns the embedding model."""
+    from langchain_cohere import CohereEmbeddings
+    return CohereEmbeddings(model="embed-english-v3.0", cohere_api_key=os.getenv("COHERE_API_KEY"))
+```
+- **Then:** `extract_clause_llm`, `query_generator_llm`, `compliance_model` are created by calling `get_llm().with_structured_output(Schema)`
+
+### Task 0.6: Create `.env.example`
+- **New file:** `.env.example` (committed to git, no real keys)
+```
+LLM_PROVIDER=groq
+LLM_MODEL=qwen/qwen3.8-27b
+GROQ_API_KEY=your_groq_key_here
+COHERE_API_KEY=your_cohere_key_here
+GOOGLE_API_KEY=your_google_key_here
+LANGSMITH_TRACING=true
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_API_KEY=your_langsmith_key_here
+LANGSMITH_PROJECT=contract-checker
+```
+
+### Task 0.7: Rotate your exposed API keys
+- Your `.env` contains live API keys. If the repo was ever pushed to GitHub, rotate them immediately in:
+  - [Groq Console](https://console.groq.com)
+  - [Cohere Dashboard](https://dashboard.cohere.com)
+  - [Google AI Studio](https://aistudio.google.com)
+
+**Acceptance criteria for Phase 0:**
+- [ ] `COHERE_API_KEY` bug fixed
+- [ ] `RAG.py` and `Retrivers.py` deleted
+- [ ] ALL clauses processed (no random sampling)
+- [ ] `compliance_checker.py` renamed (imports updated)
+- [ ] `model.py` is provider-agnostic
+- [ ] `.env.example` exists
+- [ ] App still runs: `streamlit run app.py` works with uploaded PDFs
+
+---
+
+## Phase 1 — Layout-Aware Chunking + Contextual Headers
+**Why:** The current `RecursiveCharacterTextSplitter(1000, 0)` in [retriever.py L47](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/retriever.py#L47) slices text blindly, loses headings, and the 4-page split in [app.py L91-93](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/app.py#L91-L93) can cut clauses in half.
+
+### Task 1.1: Add `pymupdf4llm` for PDF → Structured Markdown
+- **New dependency:** `pip install pymupdf4llm`
+- **New module:** `document_parser.py`
+- **What it does:**
+  1. Convert PDF to Markdown preserving `#`, `##`, `###` headings and tables
+  2. Inject `[Page X]` markers at actual page boundaries
+  3. Split by Markdown heading boundaries (not character count)
+  4. Each chunk gets a breadcrumb header prepended:
+     `[Doc: Nexify Policy | Section 2: Payment Terms | Clause 2.1 | Page 3]`
+
+### Task 1.2: Build Parent-Child chunk index
+- **Inside `document_parser.py`:**
+  - **Child chunks:** Individual sub-clauses (2.1, 2.2) — small, sharp vectors for search
+  - **Parent chunks:** Full sections (Section 2) — complete context for LLM reasoning
+  - Each child stores a `parent_id` pointer
+  - When child matches → return parent text to compliance checker
+
+### Task 1.3: Replace clause extraction approach
+- **Current:** [app.py L91-104](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/app.py#L91-L104) splits into 4-page chunks, each sent to `Extract_clause.py` for LLM extraction
+- **New:** `document_parser.py` splits the vendor contract deterministically by clause headings (0 LLM calls for this step)
+- **Fallback:** If the PDF has no clear headings (scanned/flat), THEN use LLM extraction on the full Markdown text
+- **Update:** [Extract_clause.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/Extract_clause.py) becomes a fallback, not the primary path
+
+### Task 1.4: Update retriever to use contextual chunks
+- **Modify:** [retriever.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/retriever.py) `process_uploaded_files()`
+- **Replace:** `RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)` with the new `document_parser.py` chunking
+- **Store:** Both child chunks (for search) and parent chunks (for LLM context) in the retriever
+
+**Acceptance criteria for Phase 1:**
+- [ ] PDFs converted to Markdown with headings preserved
+- [ ] Every chunk has a breadcrumb header (visible in retrieved docs)
+- [ ] Parent-child relationship established
+- [ ] No clause is split across page boundaries
+- [ ] Retriever uses contextual chunks, not naive 1000-char splits
+
+---
+
+## Phase 2 — Batched Embeddings + Weighted RRF (Kill N+1 Bottleneck)
+**Why:** Currently [query_generator.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/query_generator.py) makes 1 LLM call per clause before retrieval, and `EnsembleRetriever(weights=[0.5, 0.5])` uses fixed weighting.
+
+### Task 2.1: Implement batch embedding for all clauses
+- **New function in `retriever.py`:**
+```python
+def batch_retrieve(clauses: list[str], retrievers: list) -> dict[str, list[Document]]:
+    """Embed all clauses in one API call, then search FAISS + BM25 for each."""
+    embedding = get_embedding_model()
+    all_vectors = embedding.embed_documents(clauses)  # 1 API call!
+    # For each clause vector, search FAISS by vector + BM25 by text
+    results = {}
+    for i, clause in enumerate(clauses):
+        faiss_results = vectordb.similarity_search_by_vector(all_vectors[i], k=5)
+        bm25_results = bm25_retriever.invoke(clause)[:5]
+        results[clause] = rrf_merge(faiss_results, bm25_results)
+    return results
+```
+
+### Task 2.2: Implement explicit Weighted Reciprocal Rank Fusion (RRF)
+- **New function** (replaces LangChain's `EnsembleRetriever`):
+```python
+def rrf_merge(faiss_docs, bm25_docs, k=60, w_dense=0.6, w_sparse=0.4) -> list[Document]:
+    """Weighted RRF: combine rank positions (not raw scores) from two retrievers."""
+    scores = {}
+    for rank, doc in enumerate(faiss_docs):
+        scores[doc.page_content] = scores.get(doc.page_content, 0) + w_dense / (k + rank + 1)
+    for rank, doc in enumerate(bm25_docs):
+        scores[doc.page_content] = scores.get(doc.page_content, 0) + w_sparse / (k + rank + 1)
+    # Sort by combined RRF score, return top results
+    ...
+```
+- Weights `w_dense` and `w_sparse` become tunable parameters we can optimize in Phase 5
+
+### Task 2.3: Make `query_generator.py` a conditional fallback
+- **Modify subgraph flow:**
+  - Default path: Skip `query_generator.py` → use clause text directly for retrieval
+  - Fallback path: After reranking (Phase 3), if score < threshold → call `query_generator.py` for that specific clause and retry
+- **`query_generator.py` stays in the codebase** but only fires for ~2-3 ambiguous clauses per contract instead of every clause
+
+### Task 2.4: Parent deduplication with max-pooling
+- After retrieval, before reranking:
+  - Map each child chunk to its `parent_id`
+  - If multiple children map to the same parent → keep the parent once
+  - Score = `max(child_rrf_scores)` (not average — as you correctly noted)
+
+**Acceptance criteria for Phase 2:**
+- [ ] Embedding step uses 1 batch call regardless of clause count
+- [ ] RRF weights are configurable (not hardcoded 0.5/0.5)
+- [ ] `query_generator.py` only called for low-confidence retrievals
+- [ ] Parent chunks are deduplicated before reranking
+- [ ] Measurably fewer API calls per contract run (log and compare)
+
+---
+
+## Phase 3 — Reranker Confidence Gating + Micro-Batch Compliance
+**Why:** [Reranker.py L53](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/Reranker.py#L53) always takes top 2 regardless of score. [Compiliance_checker.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/Compiliance_checker.py) makes 1 LLM call per clause.
+
+### Task 3.1: Add 3-zone confidence gate to Reranker
+- **Modify:** [Reranker.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/Reranker.py)
+- **Current L53:** `top_indices = [item["index"] for item in reranked_docs[:2]]` — no score check
+- **New logic:**
+```python
+THRESHOLD_HIGH = 0.35    # Zone 1: confident match → proceed to compliance check
+THRESHOLD_LOW = 0.15     # Zone 3: no policy applies → skip LLM entirely
+
+top_result = reranked_docs[0]
+if top_result["relevance_score"] < THRESHOLD_LOW:
+    return {"relevant_docs": [], "rerank_zone": "no_policy"}
+elif top_result["relevance_score"] < THRESHOLD_HIGH:
+    return {"relevant_docs": [...], "rerank_zone": "retry_query"}
+else:
+    return {"relevant_docs": [...], "rerank_zone": "confident"}
+```
+
+### Task 3.2: Add `max_concurrency` to graph invocation
+- **Modify:** [graph.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/graph.py) or [app.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/app.py) where `app.invoke(state)` is called
+- **Add:** `app.invoke(state, config={"max_concurrency": 5})`
+- **Why:** Now that we removed the `random.sample(5)` limit, ALL clauses fan out. Without concurrency limits → rate-limit crashes.
+
+### Task 3.3: Micro-batch compliance checking
+- **Modify:** [compliance_checker.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/Compiliance_checker.py)
+- **Current:** 1 prompt per clause, 1 LLM call per clause
+- **New:** Group 4-5 clauses + their deduplicated policy context into a single prompt
+- **Output:** `list[ClauseComplianceResult]` via Pydantic structured output
+- **Benefit:** ~5x fewer LLM calls, ~65% fewer repeated system prompt tokens
+
+### Task 3.4: Wire the retry loop in subgraph
+- **Modify:** [subgraph.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/subgraph.py)
+- Add conditional edge: if `rerank_zone == "retry_query"` → route to `query_generator` → back to `document_retriever` → `Reranker` (max 1 retry)
+- If `rerank_zone == "no_policy"` → route directly to END with `NO_APPLICABLE_POLICY` result
+
+**Acceptance criteria for Phase 3:**
+- [ ] Boilerplate clauses with no matching policy skip the LLM entirely
+- [ ] Low-confidence retrievals trigger query rewrite (1 retry max)
+- [ ] No HTTP 429 errors even with 30+ clauses
+- [ ] Compliance calls reduced by ~4-5x via micro-batching
+
+---
+
+## Phase 4 — Caching, Citation Verification & Bidirectional Check
+**Why:** This is where the "zero hallucination" guarantee and missing-clause detection come in — the features that differentiate your project in interviews.
+
+### Task 4.1: Deterministic citation verification
+- **Add to:** `compliance_checker.py`
+- **New Pydantic field:** `exact_policy_quote: str` in `ClauseComplianceResult`
+- **Post-check (pure Python, 0 LLM cost):**
+```python
+def verify_citation(verdict: ClauseComplianceResult, retrieved_chunks: list[str]) -> bool:
+    normalized_quote = normalize(verdict.exact_policy_quote)
+    return any(normalized_quote in normalize(chunk) for chunk in retrieved_chunks)
+```
+- If verification fails → flag as `NEEDS_HUMAN_REVIEW` instead of showing a potentially hallucinated citation
+
+### Task 4.2: Two-tier clause compliance cache
+- **New module:** `cache.py`
+- **Tier 1 (Exact match):**
+  - Key: `SHA256(policy_file_hash + normalize(clause_text))`
+  - If exact match → return cached verdict in <1ms
+- **Tier 2 (Semantic match with number guard):**
+  - If cosine similarity ≥ 0.97 AND `extract_numbers_and_negations(a) == extract_numbers_and_negations(b)` → cache hit
+  - The regex guard: `re.findall(r'\d+\.?\d*|not\b|never\b|unlimited\b|no\b', text.lower())`
+  - Prevents the "45 days vs 15 days" catastrophic cache bug
+
+### Task 4.3: Bidirectional missing-clause detection
+- **New module:** `missing_clause_checker.py`
+- **How it works:**
+  1. Extract mandatory rules from the company policy (using the same document parser from Phase 1)
+  2. For each mandatory rule, search the vendor contract index
+  3. If no match found (reranker score < threshold) → flag: `MISSING_MANDATORY_CLAUSE`
+- **Why it matters:** Current pipeline only checks clauses PRESENT in the vendor contract. If the vendor simply omits a required "Data Breach Notification" clause, the current system silently passes it.
+
+### Task 4.4: Update `ClauseComplianceResult` schema
+- **Modify:** [state.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/state.py) `ClauseComplianceResult`
+```python
+class ClauseComplianceResult(BaseModel):
+    clause_text: str
+    clause_type: str
+    compliance_status: Literal["COMPLIANT", "NON_COMPLIANT", "NO_APPLICABLE_POLICY", "MISSING_MANDATORY_CLAUSE", "NEEDS_HUMAN_REVIEW"]
+    exact_policy_quote: Optional[str]       # Must be verified substring
+    policy_section_id: Optional[str]        # e.g., "Section 2.1"
+    reason: str
+    suggested_revision: Optional[str]
+    citation_verified: bool                 # Set by deterministic post-check
+    reranker_confidence: float              # For transparency
+    clauses_internal: list[str]
+```
+
+**Acceptance criteria for Phase 4:**
+- [ ] 100% of cited policy quotes pass deterministic substring verification
+- [ ] Standard boilerplate clauses return cached results without any API calls
+- [ ] "45 days" and "15 days" clauses are NOT confused by semantic cache
+- [ ] Missing mandatory clauses are detected and flagged
+- [ ] Updated schema captures all verification metadata
+
+---
+
+## Phase 5 — Automated Evaluation & Ablation Benchmark
+**Why:** This gives you the real measured numbers to replace the unverified "35% recall improvement" on your resume. This is the phase that makes interviewers say "wow."
+
+### Task 5.1: Expand `generate_test_pdfs.py` into a golden dataset
+- **Modify:** [generate_test_pdfs.py](file:///c:/Users/deepa/OneDrive/Desktop/projects/Contract_Checker-main/Contract_Checker-main/generate_test_pdfs.py)
+- **Current:** Creates 4 policy rules + 5 contract clauses with labeled edge cases
+- **Expand to:** 25-30 test cases covering:
+  - ✅ Exact compliance matches
+  - ❌ Subtle numeric deviations (Net-30 vs policy Net-45)
+  - 🔗 Cross-referenced clauses ("as defined in Section 2.1")
+  - 🚫 Omitted mandatory clauses (policy requires it, contract skips it)
+  - 🤷 Out-of-scope boilerplate (no policy applies → should be marked as such)
+  - 🔄 Paraphrased/synonym clauses (vocabulary mismatch test)
+- **Output:** `eval/golden_dataset.json` with ground-truth labels:
+```json
+{
+  "clause_text": "Vendor shall notify Customer of security incidents within 14 days",
+  "expected_policy_section": "Section 4.2",
+  "expected_status": "NON_COMPLIANT",
+  "expected_reason": "Policy requires 24-hour notification, contract says 14 days"
+}
+```
+
+### Task 5.2: Build `eval/evaluate.py` — the automated benchmark runner
+- **New file:** `eval/evaluate.py`
+- **Metrics computed:**
+
+| Metric | What It Measures | What Decision It Drives |
+|---|---|---|
+| **Recall@3** | Does the correct policy rule appear in top 3 retrieved chunks? | Whether we need more retrieval candidates |
+| **MRR@3** | How close to #1 is the correct policy rule? | Whether reranking is effective |
+| **Verdict F1** | Accuracy of COMPLIANT/NON_COMPLIANT classification | Whether prompts/LLM need improvement |
+| **Citation Faithfulness %** | % of quotes that pass substring verification | Whether hallucination prevention works |
+| **Missing Clause Detection Rate** | % of omitted mandatory clauses caught | Whether bidirectional check works |
+| **End-to-End Latency (p50/p95)** | Wall-clock seconds per contract | Whether batching/caching are effective |
+| **Total API Calls** | Count of LLM + embedding + reranker calls | Whether efficiency upgrades work |
+| **Token Cost ($)** | Input + output tokens at provider rates | ROI of micro-batching and caching |
+
+### Task 5.3: Run 4-config ablation study
+- Run the same 25-30 test cases across 4 retrieval configurations:
+
+| Config | Description | What It Proves |
+|---|---|---|
+| A | FAISS only (dense search, no BM25) | Baseline — where semantic search alone fails |
+| B | BM25 only (keyword search, no FAISS) | Baseline — where keyword search alone fails |
+| C | Naive Hybrid (BM25 + FAISS, fixed 0.5/0.5, no reranker) | Shows hybrid is better than either alone |
+| D | **Full pipeline** (Contextual chunks + Weighted RRF + Reranker + Score Gate) | Proves every component adds value |
+
+- **Output:** A markdown table + bar chart showing Recall@3, MRR@3, and Latency for each config
+- **Resume line becomes:** "Validated via automated ablation benchmark: contextual hybrid retrieval with cross-encoder reranking improved Recall@3 from X% to Y% over dense-only baselines"
+
+**Acceptance criteria for Phase 5:**
+- [ ] Golden dataset with 25+ labeled test cases
+- [ ] `python -m eval.evaluate` runs end-to-end and outputs all metrics
+- [ ] Ablation table shows measurable improvement per component
+- [ ] Real numbers replace the unverified "35% recall" claim
+
+---
+
+## Phase Dependencies
+
+```mermaid
+flowchart LR
+    P0["Phase 0\nCleanup & Abstraction"] --> P1["Phase 1\nContextual Chunking"]
+    P0 --> P2["Phase 2\nBatched Retrieval + RRF"]
+    P1 --> P2
+    P2 --> P3["Phase 3\nReranker Gating +\nMicro-Batch Compliance"]
+    P3 --> P4["Phase 4\nCaching + Citation\n+ Bidirectional Check"]
+    P0 --> P5["Phase 5\nEvaluation Benchmark"]
+    P4 --> P5
+    
+    style P0 fill:#ff6b6b,color:#fff
+    style P1 fill:#ffa06b,color:#fff
+    style P2 fill:#ffd06b,color:#000
+    style P3 fill:#6bffa0,color:#000
+    style P4 fill:#6bd0ff,color:#000
+    style P5 fill:#a06bff,color:#fff
+```
+
+> [!NOTE]
+> Phase 5 (Evaluation) can start in parallel with Phase 1 — you can build the golden dataset and evaluation harness using the current pipeline as a baseline, then re-run after each upgrade to measure improvement.
+
+---
+
+## What We Are NOT Building Yet
+
+| Deferred Item | Why Not Now | When to Revisit |
+|---|---|---|
+| FastAPI backend | Streamlit works for portfolio demos; decouple when adding multi-user support | After Phase 5 is validated |
+| PostgreSQL persistence | In-memory FAISS is fine for single-user; persist when adding audit history | After FastAPI |
+| Docker containerization | Local dev is sufficient for now | After FastAPI + PostgreSQL |
+| Redis caching | Python dict / `functools.lru_cache` is sufficient at single-user scale | After Docker |
+| Kafka / message queues | Zero need at current scale | Only if processing 1000+ contracts/day |
+| Multi-agent architecture | Dropped by your decision | Only if workflow genuinely needs it |
+| Production deployment | Premature until evaluation baseline is established | After all 5 phases |

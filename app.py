@@ -2,34 +2,36 @@ import streamlit as st
 from dotenv import load_dotenv
 import os
 
-from pypdf import PdfReader
-from Extract_clause import extract_clauses
-from retriever import process_uploaded_files
+from pipeline.nodes.document_parser import parse_vendor_contract
+from pipeline.nodes.extract_clause import extract_clauses
+from pipeline.nodes.retriever import process_uploaded_files
 
 st.set_page_config(layout="wide")
 st.session_state.setdefault("submitted", False)
 st.session_state.setdefault("uploaded_files", [])
 st.session_state.setdefault("retrievers", [])
-from graph import app
-from subgraph import sub_graph
 
+from pipeline.graph import app
+from pipeline.subgraph import sub_graph
+
+# ---------------------------------------------------------------------------
 # Load environment variables
+# ---------------------------------------------------------------------------
 if st.secrets:
-    os.environ["LANGSMITH_TRACING"] = st.secrets["LANGSMITH_TRACING"]
-    os.environ["LANGSMITH_ENDPOINT"] = st.secrets["LANGSMITH_ENDPOINT"]
-    os.environ["LANGSMITH_API_KEY"] = st.secrets["LANGSMITH_API_KEY"]
-    os.environ["LANGSMITH_PROJECT"] = st.secrets["LANGSMITH_PROJECT"]
+    os.environ["LANGSMITH_TRACING"] = st.secrets.get("LANGSMITH_TRACING", "false")
+    os.environ["LANGSMITH_ENDPOINT"] = st.secrets.get(
+        "LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"
+    )
+    os.environ["LANGSMITH_API_KEY"] = st.secrets.get("LANGSMITH_API_KEY", "")
+    os.environ["LANGSMITH_PROJECT"] = st.secrets.get("LANGSMITH_PROJECT", "contract-checker")
 else:
     load_dotenv()
 
-# Initialize session state
-# Placeholder for embedding (replace with your actual embedding model)
-# Example: from langchain.embeddings import OpenAIEmbeddings
-# embedding = OpenAIEmbeddings()
-
-# Sidebar to display uploaded files
+# ---------------------------------------------------------------------------
+# Sidebar — uploaded policy files & retrievers
+# ---------------------------------------------------------------------------
 with st.sidebar:
-    st.header("Uploaded Files")
+    st.header("Uploaded Policy Files")
     if st.session_state.get("uploaded_files"):
         for file in st.session_state.uploaded_files:
             st.write(f"- 📄 {file.name}")
@@ -44,13 +46,14 @@ with st.sidebar:
     else:
         st.write("No retrievers created yet.")
 
-# File upload section
+# ---------------------------------------------------------------------------
+# Step 1 — Upload policy documents (once per session)
+# ---------------------------------------------------------------------------
 if not st.session_state.submitted:
-    st.title("Document Processing App")
-    st.header("Upload Documents")
-    st.write("Upload one or more PDF documents to process.")
+    st.title("📂 Document Processing")
+    st.header("Upload Policy Documents")
+    st.write("Upload one or more PDF policy documents to build the retrieval index.")
 
-    # File uploader
     uploaded_files = st.file_uploader(
         "Choose PDF files", accept_multiple_files=True, type=["pdf"]
     )
@@ -63,19 +66,24 @@ if not st.session_state.submitted:
 
     if st.button("Submit Documents"):
         if uploaded_files:
-            # Process files to create retrievers
             retrievers = process_uploaded_files(uploaded_files)
             st.session_state.retrievers = retrievers
             st.session_state.submitted = True
             st.success("Documents processed successfully!")
         else:
             st.error("Please upload at least one file before submitting.")
+
+# ---------------------------------------------------------------------------
+# Step 2 — Contract analysis tabs
+# ---------------------------------------------------------------------------
 else:
     st.title("📄 Contract Clause Intelligence Suite")
 
     tab1, tab2 = st.tabs(["📌 Clause Compliance Checker", "📑 Clause Extractor"])
 
-    # --- Tab 1: Clause Compliance Checker ---
+    # -----------------------------------------------------------------------
+    # Tab 1: Full compliance check pipeline
+    # -----------------------------------------------------------------------
     with tab1:
         input_method = st.radio(
             "Choose input method:", ("Upload PDF", "Manual Clause Input")
@@ -85,82 +93,76 @@ else:
             uploaded_file = st.file_uploader("Upload a contract PDF", type="pdf")
 
             if uploaded_file:
-                reader = PdfReader(uploaded_file)
-                total_pages = len(reader.pages)
+                pdf_bytes = uploaded_file.read()
+                doc_name = uploaded_file.name
 
-                # Split pages into 4-page chunks
-                chunks = [
-                    (i, min(i + 3, total_pages - 1)) for i in range(0, total_pages, 4)
-                ]
+                # Phase 1: layout-aware Markdown parsing + heading-boundary split
+                # parse_vendor_contract returns (clauses, used_llm_fallback)
+                clauses_raw, used_llm_fallback = parse_vendor_contract(pdf_bytes, doc_name)
 
-                contract_text_chunks = []  # List to hold contract text from each chunk
+                if used_llm_fallback:
+                    # No headings detected — pass full text to LLM extractor
+                    st.info(
+                        "No section headings detected in this PDF. "
+                        "Using LLM extraction as fallback."
+                    )
 
-                for start, end in chunks:
-                    chunk_text = ""
-                    for i in range(start, end + 1):
-                        text = reader.pages[i].extract_text()
-                        if text:
-                            chunk_text += text
-                    contract_text_chunks.append(chunk_text)
-
-                # Optional: combine all chunked texts if you still want to send as one document
-                full_contract_text = "\n\n".join(contract_text_chunks)
-
-                if not full_contract_text.strip():
-                    st.error("Could not extract text from the uploaded PDF.")
+                if not clauses_raw:
+                    st.error("Could not extract any content from the uploaded PDF.")
                 else:
-                    # Create state dictionary
+                    # Build contract_text_chunks list expected by extract_clause node
+                    contract_text_chunks = [c["text"] for c in clauses_raw]
                     state = {"contract": contract_text_chunks}
 
-                    # Call your compliance-checking app
-                    response = app.invoke(state)
+                    # max_concurrency: caps parallel SubGraph runs to avoid
+                    # provider rate-limit errors when checking many clauses
+                    response = app.invoke(state, config={"max_concurrency": 5})
                     data = response["answer"]
 
                     st.subheader("Clauses Extracted from Contract")
-                    st.write(
-                        "Number of extracted clauses:",
-                        len(response["extracted_clauses"]),
-                    )
+                    num_clauses = len(response["extracted_clauses"])
+                    st.write("Number of extracted clauses:", num_clauses)
+                    st.info(f"✅ Checking ALL {num_clauses} clauses (no random sampling).")
 
                     for idx, clause in enumerate(response["extracted_clauses"], 1):
                         st.markdown(f"### {idx}. {clause['clause_type']}")
                         st.markdown(f"> ***{clause['text']}***")
                         st.markdown("---")
 
-                    if len(response["extracted_clauses"]) > 5:
-                        st.warning(
-                            "As clauses are more than 5, We will randomly select 5 clauses for compliance check."
-                        )
-
                     st.subheader("Clause Compliance Results")
-                    # for idx, clause in enumerate(data, 1):
-                    #     compliant_icon = "✅" if clause["compliant"] else "❌"
-                    #     st.markdown(
-                    #         f"### {idx}. {compliant_icon} {clause['clause_title']}"
-                    #     )
-                    #     st.markdown(f"**Policy Source:** {clause['policy_source']}")
-                    #     st.markdown(f"> ***{clause['clause_text']}***")
-                    #     st.markdown(f"**Reason:** {clause['reason']}")
-
-                    #     if not clause["compliant"] and clause.get("suggested_revision"):
-                    #         st.markdown(
-                    #             f"**Suggested Revision:** _{clause['suggested_revision']}_"
-                    #         )
-
-                    #     st.markdown("---")
                     for idx, clause in enumerate(data, 1):
                         compliant_icon = "✅" if clause["compliant"] else "❌"
-                        st.markdown(
-                            f"### {idx}. {compliant_icon} {clause['clause_title']}"
-                        )
-                        st.markdown(
-                            f"**Extracted Clause (from Input):** {clause['clause_text']}"
-                        )
-                        st.markdown(f"**Reason:** {clause['reason']}")
+                        if clause.get("is_missing_clause"):
+                            st.error(f"### {idx}. {clause['clause_title']}")
+                            st.markdown(f"**Status:** 🚨 Omitted by Vendor (Non-compliant)")
+                            st.markdown(f"**Risk Analysis:** {clause['reason']}")
+                        else:
+                            st.markdown(f"### {idx}. {compliant_icon} {clause['clause_title']}")
+                            st.markdown(
+                                f"**Extracted Clause (from Input):** {clause['clause_text']}"
+                            )
+                            st.markdown(f"**Reason:** {clause['reason']}")
 
-                        st.markdown("**Clauses:**")
-                        for entry in clause["clauses_internal"]:
-                            st.markdown(f"> *{entry}*")
+                        if clause.get("cached"):
+                            st.caption(f"⚡ Served from cache ({clause.get('cache_tier', 'exact')})")
+
+                        if clause.get("exact_policy_quote"):
+                            if clause.get("citation_verified") is True:
+                                st.markdown(f"**Verified Policy Quote:** ✅ *\"{clause['exact_policy_quote']}\"*")
+                            elif clause.get("citation_verified") is False:
+                                st.markdown(f"**Policy Quote:** ⚠️ *\"{clause['exact_policy_quote']}\" (unverified)*")
+                            else:
+                                st.markdown(f"**Policy Quote:** *\"{clause['exact_policy_quote']}\"*")
+
+                        if clause.get("suggested_revision"):
+                            st.markdown(
+                                f"**Suggested Revision:** _{clause['suggested_revision']}_"
+                            )
+
+                        if clause.get("clauses_internal"):
+                            st.markdown("**Policy References:**")
+                            for entry in clause.get("clauses_internal", []):
+                                st.markdown(f"> *{entry}*")
 
                         st.markdown("---")
         else:
@@ -202,7 +204,7 @@ else:
                             "Suggested Revision": [
                                 (
                                     d["suggested_revision"]
-                                    if not d["compliant"] and d["suggested_revision"]
+                                    if not d["compliant"] and d.get("suggested_revision")
                                     else "N/A"
                                 )
                                 for d in data
@@ -210,38 +212,43 @@ else:
                         }
                     )
 
-    # --- Tab 2: Clause Extractor Only ---
+    # -----------------------------------------------------------------------
+    # Tab 2: Clause extraction only (no compliance check)
+    # -----------------------------------------------------------------------
     with tab2:
         st.subheader("Upload Contract PDF to Extract Clauses")
 
         uploaded_file = st.file_uploader(
             "Upload PDF (Clause Extraction Only)", type="pdf", key="extractor"
         )
-## just checking the git is working or not, ignore this change
         if uploaded_file:
             try:
-                reader = PdfReader(uploaded_file)
-                total_pages = len(reader.pages)
-                chunks = [
-                    (i, min(i + 3, total_pages - 1)) for i in range(0, total_pages, 4)
-                ]
-                all_extracted_clauses = []
+                pdf_bytes = uploaded_file.read()
+                doc_name = uploaded_file.name
 
-                for start_page, end_page in chunks:
-                    chunk_text = ""
-                    for i in range(start_page, end_page + 1):
-                        text = reader.pages[i].extract_text()
-                        if text:
-                            chunk_text += text
+                # Phase 1: layout-aware parsing for Tab 2 extractor
+                clauses_raw, used_llm_fallback = parse_vendor_contract(pdf_bytes, doc_name)
 
-                    if chunk_text.strip():
-                        state = {"contract": chunk_text}
-                        response = extract_clauses(state)
-                        extracted = response.get("extracted_clauses", [])
-
-                        for clause in extracted:
-                            clause["page_range"] = f"{start_page + 1}-{end_page + 1}"
-                            all_extracted_clauses.append(clause)
+                if used_llm_fallback:
+                    st.info(
+                        "No section headings detected — using LLM extraction fallback."
+                    )
+                    # LLM extraction path (same as before)
+                    all_extracted_clauses = []
+                    full_text = clauses_raw[0]["text"] if clauses_raw else ""
+                    if full_text.strip():
+                        result = extract_clauses({"contract": full_text})
+                        all_extracted_clauses = result.get("extracted_clauses", [])
+                else:
+                    # Heading-split path — each section is already a clause
+                    all_extracted_clauses = [
+                        {
+                            "clause_type": c["clause_type"],
+                            "text": c["text"],
+                            "page_range": str(c["metadata"].get("page", "?")),
+                        }
+                        for c in clauses_raw
+                    ]
 
                 if not all_extracted_clauses:
                     st.warning("⚠️ No clauses were extracted from the document.")

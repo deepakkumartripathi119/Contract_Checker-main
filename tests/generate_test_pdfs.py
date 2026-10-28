@@ -1,5 +1,7 @@
 import sys
+import os
 import subprocess
+from pathlib import Path
 
 try:
     from reportlab.lib.pagesizes import letter
@@ -11,15 +13,18 @@ except ImportError:
     from reportlab.pdfgen import canvas
     from reportlab.lib.utils import simpleSplit
 
-def create_pdf(filename, title, content):
-    c = canvas.Canvas(filename, pagesize=letter)
+
+def create_pdf(filepath: str | Path, title: str, content: list[str]):
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    c = canvas.Canvas(str(filepath), pagesize=letter)
     width, height = letter
     c.setFont("Helvetica-Bold", 16)
     c.drawString(72, height - 72, title)
-    
+
     c.setFont("Helvetica", 12)
     y = height - 100
-    
+
     for section in content:
         lines = simpleSplit(section, "Helvetica", 12, width - 144)
         for line in lines:
@@ -29,9 +34,10 @@ def create_pdf(filename, title, content):
                 c.showPage()
                 c.setFont("Helvetica", 12)
                 y = height - 72
-        y -= 15 # extra space between sections
-        
+        y -= 15  # extra space between sections
+
     c.save()
+
 
 policy_content = [
     "Nexify Solutions Internal Procurement Policy",
@@ -46,7 +52,7 @@ policy_content = [
     "All disputes arising out of vendor contracts shall be resolved by binding arbitration in New York, NY, under the rules of the American Arbitration Association.",
     "",
     "4. Insurance Requirements",
-    "Vendors must maintain commercial general liability insurance with a minimum coverage limit of $2,000,000 per occurrence."
+    "Vendors must maintain commercial general liability insurance with a minimum coverage limit of $2,000,000 per occurrence.",
 ]
 
 contract_content = [
@@ -67,9 +73,15 @@ contract_content = [
     "Vendor may use Nexify Solutions' name and logo in its marketing materials and customer lists with prior written consent.",
     "",
     "5. Indemnification (Edge Case: Exact Match -> Compliant)",
-    "The Vendor agrees to indemnify and hold harmless Nexify Solutions from any third-party claims resulting from the Vendor's gross negligence or willful misconduct."
+    "The Vendor agrees to indemnify and hold harmless Nexify Solutions from any third-party claims resulting from the Vendor's gross negligence or willful misconduct.",
 ]
 
-create_pdf("Nexify_Company_Policy.pdf", "Internal Policy Document", policy_content)
-create_pdf("Vendor_Contract_Sample.pdf", "Vendor Contract", contract_content)
-print("PDFs generated successfully.")
+if __name__ == "__main__":
+    # Project root is parent of tests/
+    project_root = Path(__file__).resolve().parent.parent
+    data_dir = project_root / "data"
+
+    create_pdf(data_dir / "Nexify_Company_Policy.pdf", "Internal Policy Document", policy_content)
+    create_pdf(data_dir / "Vendor_Contract_Sample.pdf", "Vendor Contract", contract_content)
+    print(f"PDFs generated successfully in {data_dir}.")
+

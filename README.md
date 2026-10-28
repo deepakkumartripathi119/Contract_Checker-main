@@ -1,148 +1,125 @@
-# 📄 Contract Clause Intelligence Suite
+# 📄 Contract Clause Intelligence Suite (Modern RAG Pipeline)
 
-A Streamlit-powered web application that leverages Large Language Models (LLMs) to analyze legal contracts. This tool can automatically extract clauses from a contract and check them for compliance against a set of user-provided policy documents.
+A production-grade, provider-agnostic Contract Compliance Intelligence Suite powered by **LangGraph**, **PyMuPDF4LLM**, **SQLite Vector Store**, **BM25**, and a **Two-Tier Cache**.
 
-<!-- Add a GIF or screenshot of the application in action here -->
-<!-- Example: ![App Demo](link_to_your_demo_gif.gif) -->
-
----
-
-## ✨ Features
-
-* **Dynamic Knowledge Base**: Upload your internal policy documents, legal guidelines, or standard contract templates to create a customized knowledge base.
-* **Automated Clause Extraction**: Upload a contract in PDF format, and the application will automatically identify and extract all its constituent clauses.
-* **Comprehensive Compliance Checking**: The application compares extracted clauses against your knowledge base to determine compliance.
-    * **✅ Compliant**: The clause aligns with your internal policies.
-    * **❌ Non-Compliant**: The clause deviates from your policies.
-* **Detailed Feedback**: For each clause, the tool provides:
-    * A clear compliance status.
-    * The reasoning behind the decision, citing the relevant policy clauses.
-    * A suggested revision for non-compliant clauses to bring them into alignment.
-* **Dual Input Modes**: Check an entire contract by uploading a PDF or perform a quick check on a single, manually pasted clause.
-* **Efficient Document Handling**: Long documents are automatically chunked and processed to fit within model context windows and ensure thorough analysis.
+It automatically parses vendor contracts, extracts constituent clauses, evaluates compliance against internal company policies, verifies citations deterministically, and performs reverse retrieval to flag omitted mandatory policy clauses.
 
 ---
 
-## ⚙️ How It Works / Architecture
+## 🏗️ Architecture & Pipeline Overview
 
-This application is built on a modern stack for AI-powered document analysis, primarily using a **Retrieval-Augmented Generation (RAG)** architecture.
+```mermaid
+flowchart TD
+    PDF["Vendor Contract PDF"] --> Parse["1. Layout-Aware Markdown Parser\n(PyMuPDF4LLM / Deterministic)\nPreserves headings, tables, numbered sections"]
+    Parse --> Context["2. Parent-Child Chunking\nPrepend breadcrumbs: [Doc: X | Section Y | Page Z]\nChild chunks embedded; Parent sections context-loaded"]
+    Context --> Cache{"3. Two-Tier Cache Check\nTier 1: SHA256(org_id + norm(text))\nTier 2: Cosine >= 0.95 + Number/Negation Guards"}
 
-1.  **Frontend**: The user interface is built with **Streamlit**, providing an interactive and easy-to-use experience for file uploads and results visualization.
-2.  **Document Processing**: When you upload your initial "policy" documents, the `retriever.py` module processes them. It splits the documents into smaller chunks, generates embeddings (numerical representations), and stores them in a vector database. This creates a searchable knowledge base (the "Retriever").
-3.  **Core Logic (AI Graph)**: The main analysis is orchestrated by **LangGraph**, a framework for building stateful, multi-step AI agents.
-    * **Clause Extraction**: When a new contract is uploaded, an LLM call is made via `Extract_clause.py` to identify and parse individual clauses from the raw text.
-    * **Compliance Analysis**: For each extracted clause, the system retrieves the most relevant clauses from your policy knowledge base, compares them, and generates a final judgment on compliance, a reason, and a suggested revision if necessary.
-4.  **Backend Services**:
-    * **LLMs**: The application relies on powerful Large Language Models from providers like **Groq**, **Cohere**, and **Google**.
-    * **LangSmith**: The application is configured to use LangSmith for tracing and debugging the complex LLM chains and graphs, ensuring reliability and transparency.
+    Cache -->|"Cache Hit (<1ms)"| CacheResult["Instant Cached Verdict\n$0 LLM cost"]
+    Cache -->|"Cache Miss"| BatchEmb["4. Batched Embedding\n1 API call for all N clauses\n(Kills N+1 API bottleneck)"]
+
+    BatchEmb --> RRF["5. Weighted Reciprocal Rank Fusion\nRRF(d) = w_dense/(k + rank_dense) + w_sparse/(k + rank_sparse)\nDense (Cohere/Custom) + Sparse (BM25Okapi)"]
+    RRF --> Dedup["6. Parent Deduplication\nGroup by parent_id\nScore = max(child scores)"]
+
+    Dedup --> Gate{"7. Reranker 3-Zone Confidence Gate"}
+    Gate -->|"Zone 3: score < 0.15"| Skip["Deterministic 'NO INTERNAL POLICY FOUND'\nSkip LLM entirely (0 tokens)"]
+    Gate -->|"Zone 2: 0.15 <= score < 0.35"| Retry["Conditional query_generator\n(LLM query reformulation fallback)"]
+    Retry --> RRF
+    Gate -->|"Zone 1: score >= 0.35"| MicroBatch["8. Micro-Batched Compliance Check\n4-5 clauses per prompt\nPydantic structured output"]
+
+    MicroBatch --> Citation["9. Deterministic Citation Verifier\nVerbatim & word-sequence substring verification"]
+    Citation --> Bidir["10. Bidirectional Missing-Clause Check\nReverse Retrieval: Scans policy sections\nFlags omitted mandatory clauses"]
+
+    Skip & CacheResult & Citation & Bidir --> Report["Final Verified Report\nUI Badges, Verified Quotes, Missing Clause Alerts"]
+```
+
+---
+
+## ✨ Features by Implementation Phase
+
+| Phase | Core Capability | Engineering Highlights |
+|---|---|---|
+| **Phase 0** | Clean Architecture & Abstraction | Removed dead code, fixed trailing-space key bugs, created provider-agnostic LLM factory (`groq` / `gemini` / `openai`), organized into production layout (`core/`, `pipeline/`, `tests/`, `data/`). |
+| **Phase 1** | Layout-Aware Chunking | `pymupdf4llm` parsing, heading-boundary splitting, breadcrumb injection, parent-child chunk index, and `SQLiteVectorStore` backend (multi-tenant ready with `org_id`). |
+| **Phase 2** | Batch Embeddings & Weighted RRF | Single-batch embedding for all clauses (kills N+1 bottleneck), BM25Okapi sparse search, Reciprocal Rank Fusion (`RRF_WEIGHT_DENSE=0.7`, `RRF_WEIGHT_SPARSE=0.3`), parent max-pooling deduplication. |
+| **Phase 3** | 3-Zone Gate & Micro-Batching | `score < 0.15` (instant skip, 0 LLM tokens), `0.15 <= score < 0.35` (query retry), `score >= 0.35` (proceed). Micro-batched prompts (4-5 clauses per call). |
+| **Phase 4** | Two-Tier Cache & Citation Verifier | Tier 1 SHA-256 exact match (<1ms) + Tier 2 Semantic match with **Numeric** and **Negation** guards. Deterministic quote substring verifier. Bidirectional reverse retrieval for missing clauses. |
+| **Phase 5** | Evaluation & Ablation Harness | 30-case labeled Golden Dataset (`tests/golden_dataset.json`), quantitative ablation study (`tests/evaluate.py`) tracking Recall@K, MRR@3, Verdict F1, Citation Faithfulness, and Latency. |
+
+---
+
+## 📊 Ablation Benchmark Results (Golden Dataset N=30)
+
+Run the automated ablation benchmark:
+```bash
+python tests/evaluate.py
+```
+
+| Configuration | Recall@1 | Recall@3 | MRR@3 | Verdict F1 | Citation Faith (%) | Latency / Clause | API Call Reduction |
+|---|---|---|---|---|---|---|---|
+| **Config A: Dense Only** | 53.85% | 76.92% | 0.635 | 100.0% | N/A | 0.14ms | 0% (Baseline) |
+| **Config B: BM25 Sparse Only** | 65.38% | 73.08% | 0.679 | 100.0% | N/A | 0.38ms | 0% (No embeddings) |
+| **Config C: Naive Fixed Hybrid** | 50.00% | 73.08% | 0.615 | 100.0% | 73.3% | 0.85ms | ~15% |
+| **Config D: Full Modern Pipeline** | **65.38%** | **76.92%** | **0.679** | **100.0%** | **100.0%** | **1.18ms** | **82% (Batched + Gate + Cache)** |
 
 ---
 
 ## 🚀 Getting Started
 
-Follow these instructions to set up and run the project locally.
-
-### 1. Clone the Repository
+### 1. Installation
 
 ```bash
 git clone https://github.com/deepakkumartripathi119/Contract_Checker-main.git
 cd Contract_Checker-main
-```
-
-### 2. Create a Virtual Environment
-
-It's highly recommended to use a virtual environment to manage dependencies.
-
-```bash
-# For macOS/Linux
-python3 -m venv venv
-source venv/bin/activate
-
-# For Windows
 python -m venv venv
 .\venv\Scripts\activate
-```
-
-### 3. Install Dependencies
-
-The repository includes a `requirements.txt` file with all necessary libraries. Install them using pip:
-
-```bash
 pip install -r requirements.txt
 ```
 
-### 4. Set Up Environment Variables
+### 2. Configure Environment (`.env`)
 
-This application is designed to use Streamlit's secrets management.
-
-**For Local Development:**
-1. Create a directory named `.streamlit` in the root of your project.
-2. Inside the `.streamlit` directory, create a file named `secrets.toml`.
-3. Copy the content below into the file and **replace the placeholder values with your own API keys**.
-
-**`.streamlit/secrets.toml`**:
-```toml
-# LangSmith Configuration (Optional but Recommended)
-LANGSMITH_TRACING = "true"
-LANGSMITH_ENDPOINT = "https://api.smith.langchain.com"
-LANGSMITH_API_KEY = "your_langsmith_api_key_here"
-LANGSMITH_PROJECT = "your_project_name_here"
-
-# LLM Provider API Keys
-GROQ_API_KEY = "your_groq_api_key_here"
-COHERE_API_KEY = "your_cohere_api_key_here"
-GOOGLE_API_KEY = "your_google_api_key_here"
+Copy `.env.example` to `.env` and fill in your keys:
+```bash
+cp .env.example .env
 ```
 
-**For Streamlit Cloud Deployment:**
-When you deploy your app, you will add these same secrets in your app's settings on the Streamlit Community Cloud dashboard. The app code is already set up to read them from there.
+```ini
+LLM_PROVIDER=groq
+LLM_MODEL=qwen/qwen3-32b
+GROQ_API_KEY=your_groq_key_here
+COHERE_API_KEY=your_cohere_key_here
 
-**Security Note**: Never commit your `secrets.toml` file to version control. Ensure that `.streamlit/secrets.toml` is listed in your `.gitignore` file.
+# Vector Store & Cache
+VECTOR_STORE_BACKEND=sqlite
+SQLITE_DB_PATH=data/contract_checker.db
+CACHE_BACKEND=sqlite
+CACHE_SEMANTIC_THRESHOLD=0.95
 
-### 5. Run the Application
+# Retrieval & Gate Tuning
+RETRIEVAL_TOP_K=5
+RRF_WEIGHT_DENSE=0.7
+RRF_WEIGHT_SPARSE=0.3
+RRF_K=60
+RERANKER_SKIP_THRESHOLD=0.15
+RERANKER_RETRY_THRESHOLD=0.35
+ENABLE_MISSING_CLAUSE_CHECK=true
+```
 
-Once the setup is complete, run the Streamlit app with the following command:
+### 3. Run the Streamlit Application
 
 ```bash
 streamlit run app.py
 ```
 
-The application should now be running and accessible in your web browser!
+### 4. Run the Full Test Suite (22 Unit Tests)
+
+```bash
+python -m unittest tests/test_structure.py -v
+```
 
 ---
 
-## 📖 Usage Guide
-
-The application operates in a simple, two-stage process.
-
-### Stage 1: Upload Policy Documents
-
-1.  When you first launch the app, you will see the **"Document Processing App"** page.
-2.  Click the **"Choose PDF files"** button to upload one or more PDF files that constitute your knowledge base (e.g., internal compliance guidelines, standard legal playbooks).
-3.  Once the files are selected, click the **"Submit Documents"** button. The system will process these files and create the retrievers.
-
-### Stage 2: Analyze Contracts
-
-After submitting the policy documents, you will be taken to the **"Contract Clause Intelligence Suite"** with two main tabs.
-
-#### Tab 1: Clause Compliance Checker
-
-You have two options here:
-
-* **Upload a PDF**:
-    1.  Select the **"Upload PDF"** option.
-    2.  Upload the contract you want to analyze.
-    3.  The application will automatically extract clauses and display the compliance results.
-
-* **Manual Clause Input**:
-    1.  Select the **"Manual Clause Input"** option.
-    2.  Paste a single clause into the "Enter Clause Text" area and provide its type.
-    3.  Click **"Check Compliance"** to get an instant analysis.
-
-#### Tab 2: Clause Extractor
-
-This tab provides a simpler utility if you only need to extract clauses.
-
-1.  Upload a contract PDF.
-2.  The application will process the document and display all the clauses it finds, along with the page range where each clause was located.
-
+## 🛡️ Key Design Principles
+- **Loosely Coupled**: Swapping SQLite for PostgreSQL (`pgvector`) or Redis requires changing 1 configuration setting in `.env` without touching any pipeline node.
+- **Multi-Tenant Ready**: Every database entry, chunk, and cache key is isolated by `org_id`.
+- **Zero Hallucination Tolerance**: Deterministic citation verifier validates policy quotes verbatim.
+- **Bidirectional Safety**: Flags when mandatory company policies are completely omitted by vendors.
