@@ -117,17 +117,6 @@ POLICY_SECTIONS = [
         ),
         "breadcrumb": "[Doc: Nexify Policy | Section 3: Dispute Resolution]",
     },
-    {
-        "id": "sec-4",
-        "num": "4",
-        "title": "4. Insurance Requirements",
-        "text": (
-            "4. Insurance Requirements\n"
-            "Vendors must maintain commercial general liability insurance with a minimum coverage limit of $2,000,000 "
-            "per occurrence throughout the duration of services provided to Nexify Solutions."
-        ),
-        "breadcrumb": "[Doc: Nexify Policy | Section 4: Insurance Requirements]",
-    },
 ]
 
 

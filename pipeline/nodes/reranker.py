@@ -27,6 +27,7 @@ import os
 from langchain.schema import Document
 from core.state import SubState
 from core.model import get_config
+from pipeline.nodes.document_parser import clean_extracted_text
 
 
 def _make_skip_verdict(
@@ -49,6 +50,28 @@ def _make_skip_verdict(
         "clauses_internal": [],
         "suggested_revision": None,
         "exact_policy_quote": None,
+        "policy_evidence_status": "silence_verified",
+    }
+
+
+def _make_retrieval_review_verdict(
+    clause_type: str,
+    clause_text: str,
+) -> dict:
+    return {
+        "clause_title": clause_type,
+        "clause_text": clause_text,
+        "policy_source": "POLICY_RETRIEVAL_FAILED",
+        "reason": (
+            "Internal policy evidence could not be retrieved or inspected. "
+            "Compliance cannot be established; manual review is required."
+        ),
+        "compliant": False,
+        "clauses_internal": [],
+        "suggested_revision": "SYSTEM_UNAVAILABLE",
+        "exact_policy_quote": None,
+        "citation_verified": False,
+        "policy_evidence_status": "retrieval_failed",
     }
 
 
@@ -64,7 +87,7 @@ def Reranker(state: SubState) -> dict:
     """
     docs: list[Document] = state.get("retrived_docs", [])
     clause_data = state.get("clause", {})
-    clause_text = (
+    clause_text = clean_extracted_text(
         clause_data.get("text", "")
         if isinstance(clause_data, dict)
         else getattr(clause_data, "text", "")
@@ -94,6 +117,18 @@ def Reranker(state: SubState) -> dict:
             }
         else:
             # Already retried and still 0 docs -> Zone 3 skip
+            if state.get("policy_evidence_status") not in {
+                "searched",
+                "silence_verified",
+            }:
+                return {
+                    "relevant_docs": [],
+                    "rerank_status": "skip",
+                    "rerank_score": 0.0,
+                    "answer": [
+                        _make_retrieval_review_verdict(clause_type, clause_text)
+                    ],
+                }
             return {
                 "relevant_docs": [],
                 "rerank_status": "skip",
@@ -108,7 +143,7 @@ def Reranker(state: SubState) -> dict:
     reranked_items: list[dict] = []
 
     use_cohere = get_config("RERANKER_USE_COHERE", "false").lower() == "true"
-    if use_cohere and cohere_key and cohere_key != "your_cohere_key_here":
+    if use_cohere and cohere_key and not cohere_key.startswith("your_"):
         try:
             from langchain_cohere import CohereRerank
             reranker = CohereRerank(
@@ -149,6 +184,18 @@ def Reranker(state: SubState) -> dict:
 
     # Zone 3: Below skip threshold -> skip LLM entirely
     if top_score < skip_threshold:
+        if state.get("policy_evidence_status") not in {
+            "searched",
+            "silence_verified",
+        }:
+            return {
+                "relevant_docs": [],
+                "rerank_status": "skip",
+                "rerank_score": top_score,
+                "answer": [
+                    _make_retrieval_review_verdict(clause_type, clause_text)
+                ],
+            }
         return {
             "relevant_docs": [],
             "rerank_status": "skip",

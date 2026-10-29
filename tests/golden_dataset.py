@@ -216,25 +216,25 @@ GOLDEN_TEST_CASES: list[GoldenTestCase] = [
     ),
     GoldenTestCase(
         id="TC-17",
-        category="non_compliant",
+        category="irrelevant",
         clause_type="Insurance Requirements",
         clause_text="Vendor shall carry general liability insurance with a maximum policy coverage limit of $500,000 per occurrence.",
-        target_section="4. Insurance Requirements",
-        expected_compliant=False,
-        expected_zone="zone_1_proceed",
+        target_section="NO INTERNAL POLICY FOUND",
+        expected_compliant=True,
+        expected_zone="zone_3_skip",
         mandatory_keywords=["insurance", "500,000", "liability"],
-        notes="Substantially lower than mandatory $2,000,000 minimum limit.",
+        notes="The supplied policy has no minimum general liability insurance limit.",
     ),
     GoldenTestCase(
         id="TC-18",
-        category="non_compliant",
+        category="irrelevant",
         clause_type="Insurance Requirements",
         clause_text="Vendor is not required to carry or maintain any commercial general liability or professional insurance policy.",
-        target_section="4. Insurance Requirements",
-        expected_compliant=False,
-        expected_zone="zone_1_proceed",
+        target_section="NO INTERNAL POLICY FOUND",
+        expected_compliant=True,
+        expected_zone="zone_3_skip",
         mandatory_keywords=["insurance", "not required", "policy"],
-        notes="Direct violation of mandatory insurance policy.",
+        notes="The supplied policy has no insurance requirement to violate.",
     ),
 
     # -----------------------------------------------------------------------
@@ -348,17 +348,6 @@ GOLDEN_TEST_CASES: list[GoldenTestCase] = [
         notes="Contract that omits mandatory indemnification must trigger a missing-clause alert.",
     ),
     GoldenTestCase(
-        id="TC-28",
-        category="missing_clause",
-        clause_type="MISSING: Insurance Requirements",
-        clause_text="[OMITTED FROM CONTRACT]",
-        target_section="4. Insurance Requirements",
-        expected_compliant=False,
-        expected_zone="zone_1_proceed",
-        mandatory_keywords=["insurance", "2,000,000"],
-        notes="Contract that omits mandatory insurance coverage must trigger a missing-clause alert.",
-    ),
-    GoldenTestCase(
         id="TC-29",
         category="missing_clause",
         clause_type="MISSING: Dispute Resolution",
@@ -380,6 +369,23 @@ GOLDEN_TEST_CASES: list[GoldenTestCase] = [
         mandatory_keywords=["payment", "45", "invoices"],
         notes="Contract that omits payment terms must trigger an alert.",
     ),
+    GoldenTestCase(
+        id="TC-31",
+        category="non_compliant",
+        clause_type="Indemnification",
+        clause_text=(
+            "Vendor shall indemnify Nexify Solutions only for third-party claims "
+            "arising from gross negligence or willful misconduct."
+        ),
+        target_section="2. Indemnification",
+        expected_compliant=False,
+        expected_zone="zone_1_proceed",
+        mandatory_keywords=["gross negligence", "willful misconduct"],
+        notes=(
+            "The clause omits ordinary negligence, the duty to defend, and breach "
+            "of contract required by the supplied policy."
+        ),
+    ),
 ]
 
 
@@ -395,4 +401,3 @@ def export_golden_dataset_json(output_path: Optional[str] = None) -> Path:
 if __name__ == "__main__":
     p = export_golden_dataset_json()
     print(f"Exported {len(GOLDEN_TEST_CASES)} golden test cases to {p}")
-

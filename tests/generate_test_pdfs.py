@@ -43,16 +43,13 @@ policy_content = [
     "Nexify Solutions Internal Procurement Policy",
     "",
     "1. Payment Terms",
-    "Nexify Solutions shall pay all valid and undisputed vendor invoices within 45 days of receipt (Net 45). Early payment discounts are encouraged.",
+    "Nexify Solutions shall pay all valid and undisputed vendor invoices within 45 days of receipt (Net 45). Early payment discounts are encouraged. A longer payment period may be agreed as a negotiated exception when it benefits Nexify Solutions.",
     "",
     "2. Indemnification",
     "Vendors must indemnify, defend, and hold harmless Nexify Solutions against all third-party claims arising from the vendor's negligence, willful misconduct, or breach of contract.",
     "",
     "3. Dispute Resolution",
     "All disputes arising out of vendor contracts shall be resolved by binding arbitration in New York, NY, under the rules of the American Arbitration Association.",
-    "",
-    "4. Insurance Requirements",
-    "Vendors must maintain commercial general liability insurance with a minimum coverage limit of $2,000,000 per occurrence.",
 ]
 
 contract_content = [

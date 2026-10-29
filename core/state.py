@@ -56,6 +56,16 @@ class ClauseComplianceResult(BaseModel):
         default=None,
         description="Whether exact_policy_quote was deterministically verified in retrieved policy docs.",
     )
+    policy_evidence_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Evidence state: topic_found, silence_verified, or retrieval_failed."
+        ),
+    )
+    policy_requirement_id: Optional[str] = Field(
+        default=None,
+        description="Stable identifier for a missing policy requirement.",
+    )
     is_missing_clause: Optional[bool] = Field(
         default=False,
         description="Whether this result represents an omitted mandatory policy clause.",
@@ -66,6 +76,22 @@ class MicroBatchComplianceResult(BaseModel):
     results: List[ClauseComplianceResult] = Field(
         description="List of compliance verdicts for all clauses evaluated in the micro-batch."
     )
+
+
+class MicroBatchLLMItem(BaseModel):
+    clause_id: Optional[int] = None
+    status: Optional[str] = None
+    clause_text: Optional[str] = None
+    policy_source: Optional[str] = None
+    reason: str
+    clauses_internal: List[str] = Field(default_factory=list)
+    compliant: Optional[bool] = None
+    suggested_revision: Optional[str] = None
+    exact_policy_quote: Optional[str] = None
+
+
+class MicroBatchLLMResult(BaseModel):
+    results: List[MicroBatchLLMItem]
 
 
 class query(BaseModel):
@@ -83,18 +109,41 @@ def _retrieved_docs_reducer(a: List[Document], b: List[Document]) -> List[Docume
     return a + b
 
 
+def _missing_clauses_reducer(
+    existing: List[dict],
+    incoming: List[dict],
+) -> List[dict]:
+    """Merge missing findings idempotently across graph branches."""
+    merged: dict[str, dict] = {}
+    for finding in [*existing, *incoming]:
+        requirement_id = finding.get("policy_requirement_id")
+        if not requirement_id:
+            requirement_id = " ".join(
+                [
+                    str(finding.get("clause_title", "")).lower(),
+                    str(finding.get("exact_policy_quote", "")).lower(),
+                ]
+            ).split()
+            requirement_id = " ".join(requirement_id)
+        merged[str(requirement_id)] = finding
+    return list(merged.values())
+
+
 # ---------------------------------------------------------------------------
 # LangGraph state TypedDicts
 # ---------------------------------------------------------------------------
 
 class AgentState(TypedDict, total=False):
+    org_id: str
     contract: Annotated[List[str], add]
     extracted_clauses: Annotated[List[Clause], add]
     answer: Annotated[List[ClauseComplianceResult], add]
+    missing_clauses: Annotated[List[dict], _missing_clauses_reducer]
     compliance_batch: list[dict]
 
 
 class SubState(TypedDict, total=False):
+    org_id: str
     clause: dict
     clause_embedding: Optional[list[float]]
     query: str
@@ -104,3 +153,4 @@ class SubState(TypedDict, total=False):
     rerank_status: str       # "proceed" | "retry" | "skip"
     rerank_score: float      # top rerank confidence score
     retry_count: int         # number of retry attempts
+    policy_evidence_status: str  # "topic_found", "silence_verified", or "retrieval_failed"

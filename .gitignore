@@ -19,6 +19,7 @@ myenv/
 # Environment variable files
 .env
 .env.*
+!.env.example
 
 # VS Code settings (optional)
 .vscode/

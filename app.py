@@ -1,10 +1,12 @@
 import streamlit as st
 from dotenv import load_dotenv
-import os
+
+load_dotenv()
 
 from pipeline.nodes.document_parser import parse_vendor_contract
 from pipeline.nodes.extract_clause import extract_clauses
 from pipeline.nodes.retriever import process_uploaded_files
+from core.model import get_default_org_id
 
 st.set_page_config(layout="wide")
 st.session_state.setdefault("submitted", False)
@@ -15,37 +17,26 @@ from pipeline.graph import app
 from pipeline.subgraph import sub_graph
 
 # ---------------------------------------------------------------------------
-# Load environment variables
-# ---------------------------------------------------------------------------
-if st.secrets:
-    os.environ["LANGSMITH_TRACING"] = st.secrets.get("LANGSMITH_TRACING", "false")
-    os.environ["LANGSMITH_ENDPOINT"] = st.secrets.get(
-        "LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"
-    )
-    os.environ["LANGSMITH_API_KEY"] = st.secrets.get("LANGSMITH_API_KEY", "")
-    os.environ["LANGSMITH_PROJECT"] = st.secrets.get("LANGSMITH_PROJECT", "contract-checker")
-else:
-    load_dotenv()
-
-# ---------------------------------------------------------------------------
 # Sidebar — uploaded policy files & retrievers
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.header("Uploaded Policy Files")
-    if st.session_state.get("uploaded_files"):
-        for file in st.session_state.uploaded_files:
-            st.write(f"- 📄 {file.name}")
-    else:
-        st.write("No files uploaded yet.")
+    st.header("🏢 Organization Context")
+    org_id_input = st.text_input(
+        "Organization ID",
+        value=st.session_state.get("org_id", get_default_org_id()),
+    )
+    if org_id_input != st.session_state.get("org_id"):
+        st.session_state.org_id = org_id_input
+        st.session_state.submitted = False
+        st.rerun()
 
     st.markdown("---")
-    st.header("Retrievers")
-    if st.session_state.get("retrievers"):
-        for retriever in st.session_state.retrievers:
-            retriever_name = getattr(retriever, "name", str(retriever))
-            st.write(f"- 🤖 {retriever_name}")
+    st.header("📄 Uploaded Policy Files")
+    if st.session_state.get("uploaded_files"):
+        for file in st.session_state.uploaded_files:
+            st.write(f"- {file.name}")
     else:
-        st.write("No retrievers created yet.")
+        st.write("No files uploaded yet.")
 
 # ---------------------------------------------------------------------------
 # Step 1 — Upload policy documents (once per session)
@@ -67,7 +58,8 @@ if not st.session_state.submitted:
 
     if st.button("Submit Documents"):
         if uploaded_files:
-            retrievers = process_uploaded_files(uploaded_files)
+            current_org = st.session_state.get("org_id", get_default_org_id())
+            retrievers = process_uploaded_files(uploaded_files, org_id=current_org)
             st.session_state.retrievers = retrievers
             st.session_state.submitted = True
             st.success("Documents processed successfully!")
@@ -111,15 +103,33 @@ else:
                 if not clauses_raw:
                     st.error("Could not extract any content from the uploaded PDF.")
                 else:
-                    # Bypass LLM extraction if we successfully parsed structure
+                    current_org = st.session_state.get("org_id", get_default_org_id())
                     if not used_llm_fallback:
-                        state = {"extracted_clauses": clauses_raw}
+                        state = {
+                            "org_id": current_org,
+                            "extracted_clauses": clauses_raw,
+                        }
                     else:
-                        state = {"contract": [clauses_raw[0]["text"]]}
+                        state = {
+                            "org_id": current_org,
+                            "contract": [clauses_raw[0]["text"]],
+                        }
 
-                    # max_concurrency: caps parallel SubGraph runs to avoid rate limits
-                    response = app.invoke(state, config={"max_concurrency": 5})
+                    # Inject LangSmith tracing metadata
+                    run_config = {
+                        "max_concurrency": 5,
+                        "tags": ["prod", "vendor_contract_audit"],
+                        "metadata": {
+                            "document_name": doc_name,
+                            "org_id": current_org,
+                            "total_clauses_extracted": (
+                                len(clauses_raw) if not used_llm_fallback else 1
+                            ),
+                        },
+                    }
+                    response = app.invoke(state, config=run_config)
                     data = response["answer"]
+                    missing_results = response.get("missing_clauses", [])
 
                     clause_groups = []
                     if not used_llm_fallback:
@@ -131,10 +141,24 @@ else:
                                     "clause_type": clause["clause_type"],
                                     "page": str(metadata.get("page", "?")),
                                     "children": [],
+                                    "parent_clause": clause,
                                 }
                                 clause_groups.append(current_parent)
                             elif current_parent is not None:
                                 current_parent["children"].append(clause)
+
+                        for group in clause_groups:
+                            if not group["children"]:
+                                group["children"].append(group["parent_clause"])
+                            pages = {
+                                str(child.get("metadata", {}).get("page", "?"))
+                                for child in group["children"]
+                            }
+                            pages.discard("0")
+                            group["page"] = ", ".join(
+                                sorted(pages, key=lambda value: int(value))
+                            ) if pages else "?"
+                            del group["parent_clause"]
 
                     child_clause_count = sum(
                         len(group["children"]) for group in clause_groups
@@ -183,6 +207,11 @@ else:
                         if clause.get("cached"):
                             st.caption(
                                 f"⚡ Served from cache ({clause.get('cache_tier', 'exact')})"
+                            )
+
+                        if clause.get("policy_evidence_status"):
+                            st.caption(
+                                f"Policy evidence status: {clause['policy_evidence_status']}"
                             )
 
                         if clause.get("exact_policy_quote"):
@@ -252,9 +281,6 @@ else:
                             )
                             render_compliance_result(clause, heading)
 
-                    missing_results = [
-                        clause for clause in data if clause.get("is_missing_clause")
-                    ]
                     if not used_llm_fallback:
                         for result_index, clause in enumerate(
                             missing_results, child_clause_count + 1
@@ -269,21 +295,33 @@ else:
             )
             clause_type = st.text_input(
                 "Enter Clause Type",
-                placeholder="e.g., Payment Terms, Termination, Confidentiality",
+                placeholder="Enter the clause heading or substantive topic",
             )
 
             if st.button("Check Compliance"):
                 if not clause_text or not clause_type:
                     st.error("Please provide both clause text and clause type.")
                 else:
+                    current_org = st.session_state.get("org_id", get_default_org_id())
                     state = {
+                        "org_id": current_org,
                         "clause": {
                             "text": clause_text,
                             "clause_type": clause_type,
                             "metadata": {},
                         }
                     }
-                    response = sub_graph.invoke(state)
+                    response = sub_graph.invoke(
+                        state,
+                        config={
+                            "tags": ["prod", "manual_clause_audit"],
+                            "metadata": {
+                                "document_name": "manual_clause_input",
+                                "org_id": current_org,
+                                "total_clauses_extracted": 1,
+                            },
+                        },
+                    )
                     data = response["answer"]
 
                     st.subheader("Clause Compliance Results")
@@ -335,7 +373,12 @@ else:
                     all_extracted_clauses = []
                     full_text = clauses_raw[0]["text"] if clauses_raw else ""
                     if full_text.strip():
-                        result = extract_clauses({"contract": full_text})
+                        result = extract_clauses(
+                            {
+                                "org_id": st.session_state.get("org_id", get_default_org_id()),
+                                "contract": [full_text],
+                            }
+                        )
                         all_extracted_clauses = [
                             {**clause, "page_range": "?"}
                             for clause in result.get("extracted_clauses", [])
@@ -362,6 +405,15 @@ else:
                                     "page_range": str(metadata.get("page", "?")),
                                 }
                             )
+
+                            child_pages = {
+                                child["page_range"]
+                                for child in current_parent["children"]
+                            }
+                            child_pages.discard("0")
+                            current_parent["page_range"] = ", ".join(
+                                sorted(child_pages, key=lambda value: int(value))
+                            ) if child_pages else current_parent["page_range"]
 
                 if not all_extracted_clauses:
                     st.warning("⚠️ No clauses were extracted from the document.")

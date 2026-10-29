@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from langsmith import traceable
 
 
 _NEGATION_TOKENS = {
@@ -66,6 +67,7 @@ class CacheBackend(ABC):
         """Direct exact store by key."""
 
     @abstractmethod
+    @traceable(name="cache_get")
     def get_verdict(
         self,
         clause_text: str,
@@ -78,6 +80,7 @@ class CacheBackend(ABC):
         """
 
     @abstractmethod
+    @traceable(name="cache_set")
     def set_verdict(
         self,
         org_id: str,

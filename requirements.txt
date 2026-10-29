@@ -6,10 +6,12 @@ langchain_openai
 langchain_cohere
 langchain_community
 langgraph
+langsmith
 python-dotenv
 pypdf
 pymupdf4llm
 pymupdf
+rapidocr-onnxruntime
 faiss-cpu
 rank_bm25
 streamlit

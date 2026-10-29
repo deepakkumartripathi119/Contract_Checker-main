@@ -12,7 +12,7 @@ Responsibilities
      1.1.1       → sub-sub-section     (child of 1.1)
      # / ## /### → Markdown headings   (same treatment)
 3. Prepend a breadcrumb header to each chunk:
-     "[Doc: Nexify Policy | Section 2: Payment Terms | Page 3]"
+     "[Doc: <document> | Section <heading> | Page <number>]"
 4. Build a parent-child index:
      - child chunks  → embedded + searched (small, sharp vectors)
      - parent chunks → stored for LLM context (full section text)
@@ -22,7 +22,7 @@ Responsibilities
 org_id
 ------
 Every function accepts org_id so chunks are always org-scoped.
-Currently defaults to the value of POLICY_ORG_ID env var ("nexify" if unset).
+Currently defaults to the value of POLICY_ORG_ID env var.
 Multi-tenant: callers pass org_id per request — no other changes needed.
 
 Public API
@@ -47,7 +47,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from langsmith import traceable
+
 from core.vector_store import Chunk
+from core.model import get_default_org_id
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +68,30 @@ _ANY_HEADING = re.compile(
     r"^(?:\d+(?:\.\d+)*[\.\)]?\s+.+|#{1,4}\s+.+)$", re.MULTILINE
 )
 
+_SYNTHETIC_ANNOTATION = re.compile(
+    r"\s*\(\s*edge\s+case\s*:[^()\r\n]*(?:should\s+be|compliant|non[- ]compliant)"
+    r"[^()\r\n]*\)",
+    re.IGNORECASE,
+)
+
+
+def remove_synthetic_expected_annotations(text: str) -> str:
+    """Remove explicit benchmark labels without altering contract language."""
+    cleaned = _SYNTHETIC_ANNOTATION.sub("", text)
+    return re.sub(
+        r"(?im)^[ \t]*(?:edge\s+case\s*:).*(?:should\s+be|compliant|non[- ]compliant).*$",
+        "",
+        cleaned,
+    )
+
+
+def clean_extracted_text(text: str) -> str:
+    """Remove parser-only Markdown/page markers while preserving source wording."""
+    text = remove_synthetic_expected_annotations(text)
+    text = re.sub(r"(?m)^\s*\[Page\s+\d+\]\s*$", "", text)
+    text = re.sub(r"(?m)^\s*#{1,6}\s+", "", text)
+    text = re.sub(r"(?m)^\s*[*_`]+([^*_`]+)[*_`]+\s*$", r"\1", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -84,8 +111,13 @@ def _pdf_to_markdown(pdf_bytes: bytes) -> str:
         import pymupdf4llm          # type: ignore
         import pymupdf              # type: ignore  (fitz)
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-        md = pymupdf4llm.to_markdown(doc)
-        return md
+        page_chunks = pymupdf4llm.to_markdown(doc, page_chunks=True)
+        if isinstance(page_chunks, list):
+            return "\n\n".join(
+                f"[Page {page_number}]\n{chunk.get('text', '')}"
+                for page_number, chunk in enumerate(page_chunks, 1)
+            )
+        return page_chunks
     except ImportError:
         # Graceful fallback — install pymupdf4llm for full layout preservation
         from pypdf import PdfReader
@@ -146,7 +178,7 @@ def _make_breadcrumb(doc_name: str, section_stack: list[str], page: int) -> str:
     """
     Build a human-readable breadcrumb injected at the top of each chunk.
 
-    Example: "[Doc: Nexify Policy | Section 1: Payment Terms | Section 1.1: Late Fees | Page 2]"
+    Example: "[Doc: <document> | Section <heading> | Section <subheading> | Page <number>]"
     """
     parts = [f"Doc: {doc_name}"]
     for s in section_stack:
@@ -249,6 +281,7 @@ def _split_by_headings(markdown: str, doc_name: str) -> list[_RawSection]:
 # Public API
 # ---------------------------------------------------------------------------
 
+@traceable
 def parse_policy_pdf(
     pdf_bytes: bytes,
     doc_name: str,
@@ -276,7 +309,7 @@ def parse_policy_pdf(
       1. Embed all child chunks in one batch call
       2. Call vector_store.add_chunks(org_id, chunks)
     """
-    org_id = org_id or os.getenv("POLICY_ORG_ID", "nexify")
+    org_id = org_id or get_default_org_id()
     did = _doc_id(pdf_bytes)
     markdown = _pdf_to_markdown(pdf_bytes)
     sections = _split_by_headings(markdown, doc_name)
@@ -402,6 +435,7 @@ def parse_policy_pdf(
     return chunks
 
 
+@traceable
 def parse_vendor_contract(
     pdf_bytes: bytes,
     doc_name: str,
@@ -412,7 +446,7 @@ def parse_vendor_contract(
     Each dict:
       {
         "text":        str,   # full clause text
-        "clause_type": str,   # heading title (e.g. "Payment Terms")
+        "clause_type": str,   # extracted heading title
         "metadata":    dict,  # page, heading_num, breadcrumb, …
       }
 
@@ -425,7 +459,7 @@ def parse_vendor_contract(
 
     The caller (app.py) checks used_llm_fallback and routes accordingly.
     """
-    markdown = _pdf_to_markdown(pdf_bytes)
+    markdown = remove_synthetic_expected_annotations(_pdf_to_markdown(pdf_bytes))
     sections = _split_by_headings(markdown, doc_name)
 
     if not sections:
@@ -436,8 +470,8 @@ def parse_vendor_contract(
     for sec in sections:
         breadcrumb = _make_breadcrumb(doc_name, [f"{sec.heading_num}: {sec.title}"], sec.page)
         clauses.append({
-            "text": sec.text,
-            "clause_type": sec.title,
+            "text": clean_extracted_text(sec.text),
+            "clause_type": clean_extracted_text(sec.title),
             "metadata": {
                 "doc_name": doc_name,
                 "heading_num": sec.heading_num,

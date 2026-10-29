@@ -15,15 +15,13 @@ load_dotenv()
 
 
 def get_config(key: str, default: str | None = None) -> str | None:
-    """Read a config value from Streamlit secrets (if available) or environment variable."""
-    try:
-        import streamlit as st
-        val = st.secrets.get(key)
-        if val is not None:
-            return str(val)
-    except Exception:
-        pass
+    """Read a configuration value from environment variables only."""
     return os.getenv(key, default)
+
+
+def get_default_org_id() -> str:
+    """Return the configured organization, or a neutral local default."""
+    return get_config("POLICY_ORG_ID", "default") or "default"
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +110,13 @@ from core.state import (  # noqa: E402
     query as QuerySchema,
     ClauseComplianceResult,
     MicroBatchComplianceResult,
+    MicroBatchLLMResult,
 )
 
 extract_clause_llm = get_llm(temperature=0.0).with_structured_output(ExtractedClauses)
 query_generator_llm = get_llm(temperature=0.3).with_structured_output(QuerySchema)
 compliance_model = get_llm(temperature=0.0).with_structured_output(ClauseComplianceResult)
-micro_batch_compliance_model = get_llm(temperature=0.0).with_structured_output(MicroBatchComplianceResult)
+micro_batch_compliance_model = get_llm(temperature=0.0).with_structured_output(
+    MicroBatchLLMResult,
+    method="json_mode",
+)

@@ -1,44 +1,41 @@
-"""
-pipeline/nodes/extract_clause.py — LangGraph node: extract clauses from contract text.
-
-Takes a raw contract text chunk and returns a list of typed Clause objects
-using a structured-output LLM call. Hardcoded to 8 clause types for now
-(Phase 1 will make this dynamic / fallback-only).
-"""
+"""LangGraph node for fallback contract clause extraction."""
 
 from core.state import AgentState
-from core.model import extract_clause_llm
+from core.model import extract_clause_llm, get_default_org_id
+from core.vector_store import get_vector_store
+from pipeline.nodes.document_parser import remove_synthetic_expected_annotations
+from prompts.clause_extraction import CLAUSE_EXTRACTION_SYSTEM_PROMPT
 
 
-def extract_clauses(state: AgentState) -> AgentState:
-    contract_text = state["contract"]
-    prompt = f"""Extract the following contract clauses from the input:
+def extract_clauses(state: AgentState) -> dict:
+    contract_text = remove_synthetic_expected_annotations(
+        state.get("contract", [""])[0]
+    )
+    org_id = state.get("org_id", get_default_org_id())
 
-- Indemnification
-- Warranties and Representations
-- Dispute Resolution
-- Governing Law and Jurisdiction
-- Subcontracting and Assignment
-- Intellectual Property
-- Limitation of Liability
-- Insurance
+    store = get_vector_store()
+    policy_sections = store.get_policy_sections(org_id)
 
-For each clause:
-- Identify and assign a `clause_type` based on its content.
-- Provide the clause `text`, limited to one logical unit of meaning per item.
-- Do not merge unrelated ideas into the same clause.
-- Avoid generic sections, repetitions, and administrative content unless legally relevant.
-- Omit headers or section titles unless they contain substantive text.
+    allowed_types = {
+        f"- {title}"
+        for sec in policy_sections
+        if (title := sec.metadata.get("heading", ""))
+        and title.lower() not in (
+            "flat",
+            "unknown",
+            "section",
+            "internal policy document",
+        )
+    }
 
-Return the result as a JSON list of clauses, each with:
-- `clause_type`: a short name (use one of the types listed above)
-- `text`: one clear, focused clause
-
-Contract:
-\"\"\"
-{contract_text}
-\"\"\"
-"""
+    allowed_types_str = "\n".join(sorted(allowed_types)) or (
+        "(No policy headings were available. Derive each clause type from the "
+        "contract's own heading or substantive topic.)"
+    )
+    system_instruction = CLAUSE_EXTRACTION_SYSTEM_PROMPT.format(
+        allowed_clause_types=allowed_types_str
+    )
+    prompt = f'{system_instruction}\n\nContract:\n"""\n{contract_text}\n"""'
 
     for attempt in range(5):
         try:

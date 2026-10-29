@@ -18,13 +18,26 @@ Phase 4 Features
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 from langchain.schema import Document
 
 from core.state import SubState, ClauseComplianceResult, MicroBatchComplianceResult
-from core.model import compliance_model, micro_batch_compliance_model, get_config
+from core.model import (
+    compliance_model,
+    micro_batch_compliance_model,
+    get_config,
+    get_default_org_id,
+)
 from core.cache import get_cache
 from core.citation_verifier import verify_compliance_result
+from pipeline.nodes.document_parser import remove_synthetic_expected_annotations
+from core.vector_store import get_vector_store
+from pipeline.nodes.retriever import policy_topic_matches
+from prompts.compliance import (
+    COMPLIANCE_SYSTEM_PROMPT,
+    MICRO_BATCH_COMPLIANCE_SYSTEM_PROMPT,
+)
 
 
 def _combine_docs_with_sources(documents: list[Document]) -> str:
@@ -33,12 +46,141 @@ def _combine_docs_with_sources(documents: list[Document]) -> str:
     for doc in documents:
         source = doc.metadata.get("source", "unknown")
         breadcrumb = doc.metadata.get("breadcrumb", "")
+        heading = doc.metadata.get("heading", "")
         content = doc.page_content.strip()
         header = f"Source: {source}"
+        if heading:
+            header += f" | Policy section: {heading}"
         if breadcrumb:
             header += f" | {breadcrumb}"
         combined += f"{header}\nContent:\n{content}\n\n---\n"
     return combined
+
+
+def _topic_filtered_docs(clause_type: str, documents: list[Document]) -> list[Document]:
+    """Keep retrieved evidence aligned with the clause being evaluated."""
+    return [
+        doc
+        for doc in documents
+        if policy_topic_matches(
+            clause_type,
+            doc.metadata.get("heading", ""),
+            f"{doc.metadata.get('breadcrumb', '')} {doc.page_content}",
+        )
+    ]
+
+
+def _clause_fields(item: dict) -> tuple[str, str, list[Document]]:
+    clause_data = item.get("clause", {})
+    clause_text = remove_synthetic_expected_annotations(
+        (
+        clause_data.get("text", "")
+        if isinstance(clause_data, dict)
+        else getattr(clause_data, "text", "")
+        )
+    )
+    clause_type = (
+        clause_data.get("clause_type", "Unknown")
+        if isinstance(clause_data, dict)
+        else getattr(clause_data, "clause_type", "Unknown")
+    )
+    return clause_text, clause_type, _topic_filtered_docs(
+        clause_type, item.get("relevant_docs", [])
+    )
+
+
+def _system_error_result(
+    item: dict,
+    message: str,
+) -> dict:
+    clause_text, clause_type, docs = _clause_fields(item)
+    return {
+        "clause_title": clause_type,
+        "clause_text": clause_text,
+        "policy_source": (
+            docs[0].metadata.get("source", "Unknown") if docs else "Unknown"
+        ),
+        "compliant": False,
+        "reason": f"SYSTEM ERROR: {message}. Manual review required.",
+        "clauses_internal": [],
+        "suggested_revision": "SYSTEM_UNAVAILABLE",
+        "exact_policy_quote": "SYSTEM_UNAVAILABLE",
+        "citation_verified": False,
+    }
+
+
+def _no_policy_result(item: dict) -> dict:
+    clause_text, clause_type, _ = _clause_fields(item)
+    return {
+        "clause_title": clause_type,
+        "clause_text": clause_text,
+        "policy_source": "NO INTERNAL POLICY FOUND",
+        "reason": (
+            "The checked internal policy contains no applicable rule for this clause. "
+            "Under the silent-policy rule, it is compliant by default."
+        ),
+        "compliant": True,
+        "clauses_internal": [],
+        "suggested_revision": None,
+        "exact_policy_quote": None,
+        "citation_verified": None,
+        "policy_evidence_status": "silence_verified",
+    }
+
+
+def _retrieval_review_result(item: dict) -> dict:
+    clause_text, clause_type, _ = _clause_fields(item)
+    return {
+        "clause_title": clause_type,
+        "clause_text": clause_text,
+        "policy_source": "POLICY_RETRIEVAL_FAILED",
+        "reason": (
+            "Internal policy evidence could not be retrieved or inspected. "
+            "Compliance cannot be established; manual review is required."
+        ),
+        "compliant": False,
+        "clauses_internal": [],
+        "suggested_revision": "SYSTEM_UNAVAILABLE",
+        "exact_policy_quote": None,
+        "citation_verified": False,
+        "policy_evidence_status": "retrieval_failed",
+    }
+
+
+def _normalize_batch_result(
+    result: dict,
+    item: dict,
+    docs: list[Document],
+) -> dict:
+    status = str(result.get("status", "")).strip().lower()
+    if status and status not in {"compliant", "non_compliant", "non-compliant"}:
+        raise ValueError(f"batch result has invalid status: {status}")
+    compliant = result.get("compliant")
+    if compliant is None:
+        if status in {"compliant", "non_compliant", "non-compliant"}:
+            compliant = status == "compliant"
+        else:
+            raise ValueError("batch result has no valid status or compliant value")
+    if not isinstance(compliant, bool):
+        raise ValueError("batch result compliant value is not boolean")
+
+    clause_text, clause_type, _ = _clause_fields(item)
+    normalized = {
+        "clause_text": clause_text,
+        "policy_source": result.get(
+            "policy_source",
+            docs[0].metadata.get("source", "Unknown") if docs else "Unknown",
+        ),
+        "reason": result["reason"],
+        "compliant": compliant,
+        "clauses_internal": result.get("clauses_internal", []),
+        "suggested_revision": result.get("suggested_revision"),
+        "exact_policy_quote": result.get("exact_policy_quote"),
+        "citation_verified": None,
+        "clause_title": clause_type,
+        "policy_evidence_status": item.get("policy_evidence_status"),
+    }
+    return verify_compliance_result(normalized, docs)
 
 
 def compliance_checker(state: SubState) -> dict:
@@ -53,17 +195,19 @@ def compliance_checker(state: SubState) -> dict:
         return {"answer": state["answer"]}
 
     clause_data = state.get("clause", {})
-    clause_text = (
+    clause_text = remove_synthetic_expected_annotations(
+        (
         clause_data.get("text", "")
         if isinstance(clause_data, dict)
         else getattr(clause_data, "text", "")
+        )
     )
     clause_type = (
         clause_data.get("clause_type", "Unknown")
         if isinstance(clause_data, dict)
         else getattr(clause_data, "clause_type", "Unknown")
     )
-    org_id = get_config("POLICY_ORG_ID", "nexify")
+    org_id = state.get("org_id", get_default_org_id())
     cache = get_cache()
     clause_embedding = state.get("clause_embedding")
 
@@ -73,35 +217,41 @@ def compliance_checker(state: SubState) -> dict:
         cached_verdict["clause_title"] = clause_type
         return {"answer": [cached_verdict]}
 
-    docs = state.get("relevant_docs", [])
+    docs = _topic_filtered_docs(clause_type, state.get("relevant_docs", []))
     docs_str = _combine_docs_with_sources(docs)
+    evidence_status = state.get("policy_evidence_status")
+    if not evidence_status:
+        policy_sections = get_vector_store().get_policy_sections(org_id)
+        evidence_status = (
+            "retrieval_failed"
+            if not policy_sections
+            else (
+                "topic_found"
+                if any(
+                    policy_topic_matches(
+                        clause_type,
+                        section.metadata.get("heading", ""),
+                        section.text,
+                    )
+                    for section in policy_sections
+                )
+                else "silence_verified"
+            )
+        )
 
     # 3. No policy retrieved -> default compliant
+    item = {"clause": clause_data, "relevant_docs": docs}
     if not docs_str.strip():
-        result = {
-            "clause_title": clause_type,
-            "clause_text": clause_text,
-            "policy_source": "NO INTERNAL POLICY FOUND",
-            "reason": (
-                "No internal policy guidelines found for this clause type. "
-                "Marked compliant by default."
-            ),
-            "compliant": True,
-            "clauses_internal": [],
-            "suggested_revision": None,
-            "exact_policy_quote": None,
-            "citation_verified": None,
-        }
+        result = (
+            _no_policy_result(item)
+            if evidence_status in {"searched", "silence_verified"}
+            else _retrieval_review_result(item)
+        )
         cache.set_verdict(org_id, clause_text, result, embedding=clause_embedding)
         return {"answer": [result]}
 
-    prompt = f"""You are a contract compliance assistant for Nexify Solutions.
-
-Your task: evaluate whether the vendor-proposed clause below complies with
-Nexify Solutions' internal policy guidelines.
-
-Always evaluate strictly from Nexify Solutions' perspective (they are the
-recipient of vendor services).
+    system_instruction = COMPLIANCE_SYSTEM_PROMPT.format(company_name=org_id)
+    prompt = f"""{system_instruction}
 
 Clause Type: {clause_type}
 
@@ -115,38 +265,19 @@ Internal Policy (retrieved):
 {docs_str}
 ---
 
-Evaluation Rules:
-1. If the clause matches internal policy → COMPLIANT.
-2. If it matches but lacks key points → COMPLIANT, but set suggested_revision.
-3. If it deviates:
-   - Harms Nexify (unfavorable terms, reduced rights, increased costs) → NON_COMPLIANT
-   - Benefits Nexify (better terms, more rights, cost savings) → COMPLIANT
-4. If no applicable policy is found → COMPLIANT, policy_source = "NO INTERNAL POLICY FOUND"
-5. If non-compliant → suggest a concise revision in suggested_revision.
-6. Provide exact verbatim quotes in exact_policy_quote when applicable.
-
-Respond in the exact JSON schema provided. Keep reason and suggested_revision concise.
 """
 
     try:
         response = compliance_model.invoke(prompt)
     except Exception as e:
-        print(f"[Warning] compliance_model invoke failed: {e}")
-        response = None
+        print(f"[ERROR] compliance_model invoke failed: {e}")
+        return {"answer": [_system_error_result(
+            {"clause": clause_data, "relevant_docs": docs},
+            f"LLM provider failed to respond ({e})",
+        )]}
 
-    if response is None:
-        compliance_result = {
-            "clause_text": clause_text,
-            "policy_source": "none",
-            "reason": "LLM returned no response; marked compliant by default.",
-            "compliant": True,
-            "clauses_internal": [],
-            "suggested_revision": None,
-            "exact_policy_quote": None,
-            "citation_verified": None,
-        }
-    else:
-        compliance_result = response.model_dump()
+    compliance_result = response.model_dump()
+    compliance_result["policy_evidence_status"] = evidence_status
 
     # Deterministic Citation Verification (Phase 4)
     compliance_result = verify_compliance_result(compliance_result, docs)
@@ -175,7 +306,11 @@ def evaluate_micro_batch(
         res = compliance_checker(clauses_with_docs[0])
         return res.get("answer", [])
 
-    org_id = get_config("POLICY_ORG_ID", "nexify")
+    org_id = (
+        clauses_with_docs[0].get("org_id", get_default_org_id())
+        if clauses_with_docs
+        else get_default_org_id()
+    )
     cache = get_cache()
 
     # Check cache for each item in the batch
@@ -183,8 +318,7 @@ def evaluate_micro_batch(
     uncached_indices: list[int] = []
 
     for i, item in enumerate(clauses_with_docs):
-        c_data = item.get("clause", {})
-        c_text = c_data.get("text", "") if isinstance(c_data, dict) else getattr(c_data, "text", "")
+        c_text, _, _ = _clause_fields(item)
         cached = cache.get_verdict(
             c_text, org_id, embedding=item.get("clause_embedding")
         )
@@ -201,18 +335,18 @@ def evaluate_micro_batch(
         return [r for r in cached_results if r is not None]
 
     # Format multi-clause prompt for uncached clauses
-    batch_prompt = """You are a contract compliance assistant for Nexify Solutions.
-Evaluate the following vendor-proposed clauses against their respective retrieved internal policy guidelines.
-Always evaluate strictly from Nexify Solutions' perspective.
+    company_name = clauses_with_docs[0].get("org_id", get_default_org_id())
+    system_instruction = MICRO_BATCH_COMPLIANCE_SYSTEM_PROMPT.format(
+        company_name=company_name
+    )
+    batch_prompt = f"""{system_instruction}
 
 """
 
     for list_pos, idx in enumerate(uncached_indices, start=1):
         item = clauses_with_docs[idx]
-        c_data = item.get("clause", {})
-        c_text = c_data.get("text", "") if isinstance(c_data, dict) else getattr(c_data, "text", "")
-        c_type = c_data.get("clause_type", "Unknown") if isinstance(c_data, dict) else getattr(c_data, "clause_type", "Unknown")
-        docs_text = _combine_docs_with_sources(item.get("relevant_docs", []))
+        c_text, c_type, docs = _clause_fields(item)
+        docs_text = _combine_docs_with_sources(docs)
 
         batch_prompt += f"""### CLAUSE #{list_pos}: {c_type}
 Vendor Proposed Text:
@@ -224,35 +358,59 @@ Retrieved Policy Evidence:
 ---
 """
 
-    batch_prompt += """
-For EACH clause above, provide a compliance result in order.
-Return the full list of results matching the input clauses.
-"""
-
-    llm_results = []
     try:
         response = micro_batch_compliance_model.invoke(batch_prompt)
-        if response and hasattr(response, "results"):
-            for res_obj, idx in zip(response.results, uncached_indices):
-                res_dict = res_obj.model_dump()
-                item = clauses_with_docs[idx]
-                c_data = item.get("clause", {})
-                c_type = c_data.get("clause_type", "Unknown") if isinstance(c_data, dict) else getattr(c_data, "clause_type", "Unknown")
-                c_text = c_data.get("text", "") if isinstance(c_data, dict) else getattr(c_data, "text", "")
+        if not response or not hasattr(response, "results"):
+            raise ValueError("micro-batch response did not contain a results array")
+        if len(response.results) != len(uncached_indices):
+            raise ValueError(
+                "micro-batch response count did not match the number of input clauses"
+            )
 
-                # Citation verification
-                res_dict = verify_compliance_result(res_dict, item.get("relevant_docs", []))
-                res_dict["clause_title"] = c_type
+        raw_results = [res_obj.model_dump() for res_obj in response.results]
+        result_ids = [result.get("clause_id") for result in raw_results]
+        if all(result_id is not None for result_id in result_ids):
+            expected_ids = list(range(1, len(uncached_indices) + 1))
+            if sorted(result_ids) != expected_ids:
+                raise ValueError("micro-batch clause IDs were missing, duplicated, or invalid")
+            raw_results = [
+                next(result for result in raw_results if result["clause_id"] == clause_id)
+                for clause_id in expected_ids
+            ]
 
-                # Cache result
-                cache.set_verdict(
-                    org_id, c_text, res_dict,
-                    embedding=item.get("clause_embedding"),
+        for res_dict, idx in zip(raw_results, uncached_indices):
+            item = clauses_with_docs[idx]
+            _, _, docs = _clause_fields(item)
+            if not docs:
+                res_dict = (
+                    _no_policy_result(item)
+                    if item.get("policy_evidence_status") in {
+                        "searched",
+                        "silence_verified",
+                    }
+                    else _retrieval_review_result(item)
                 )
-                cached_results[idx] = res_dict
-            return [r for r in cached_results if r is not None]
+            else:
+                res_dict = _normalize_batch_result(res_dict, item, docs)
+            c_text, _, _ = _clause_fields(item)
+
+            cache.set_verdict(
+                org_id,
+                c_text,
+                res_dict,
+                embedding=item.get("clause_embedding"),
+            )
+            cached_results[idx] = res_dict
+        return [r for r in cached_results if r is not None]
     except Exception as e:
-        print(f"[Warning] Micro-batch compliance failed: {e}. Falling back to sequential evaluation.")
+        print(f"[ERROR] Micro-batch invoke failed: {e}")
+        return [
+            _system_error_result(
+                item,
+                f"batch LLM response was invalid or unavailable ({e})",
+            )
+            for item in clauses_with_docs
+        ]
 
     # Fallback for remaining uncached
     for idx in uncached_indices:

@@ -19,20 +19,42 @@ Phase 2 Modernizations
 
 from __future__ import annotations
 
+import re
 import os
 from typing import Any, Optional
 from langchain.schema import Document
+from langsmith import traceable
 
-from core.model import get_embedding_model, get_config
+from core.model import get_embedding_model, get_config, get_default_org_id
 from core.state import SubState, Clause
 from core.vector_store import Chunk, VectorStoreBackend, get_vector_store
 from pipeline.nodes.document_parser import parse_policy_pdf
+
+
+def policy_topic_matches(clause_type: str, heading: str, text: str) -> bool:
+    """Check topic overlap without assuming a fixed policy taxonomy."""
+    ignored = {
+        "a", "an", "and", "clause", "contract", "for", "in", "of", "on",
+        "policy", "provision", "section", "term", "terms", "the", "to",
+    }
+
+    def tokens(value: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"\b[a-z]{3,}\b", value.lower())
+            if token not in ignored
+        }
+
+    clause_terms = tokens(clause_type)
+    searchable = tokens(f"{heading} {text}")
+    return bool(clause_terms and clause_terms.intersection(searchable))
 
 
 # ---------------------------------------------------------------------------
 # Reciprocal Rank Fusion (RRF) & Parent Deduplication with Max-Pooling
 # ---------------------------------------------------------------------------
 
+@traceable
 def rrf_merge(
     dense_hits: list[tuple[float, Chunk]] | list[Chunk],
     sparse_hits: list[tuple[float, Chunk]] | list[Chunk],
@@ -83,6 +105,7 @@ def rrf_merge(
     return sorted_results
 
 
+@traceable
 def deduplicate_parents_max_pooling(
     scored_chunks: list[tuple[Chunk, float]],
     store: VectorStoreBackend,
@@ -152,6 +175,7 @@ def deduplicate_parents_max_pooling(
 # Policy ingestion
 # ---------------------------------------------------------------------------
 
+@traceable
 def process_uploaded_files(
     uploaded_files,
     org_id: str | None = None,
@@ -159,7 +183,7 @@ def process_uploaded_files(
     """
     Ingest a list of uploaded policy PDF files for an organisation.
     """
-    org_id = org_id or get_config("POLICY_ORG_ID", "nexify")
+    org_id = org_id or get_default_org_id()
     store = get_vector_store()
     
     # WIPE ghost data before ingesting new policies to prevent missing-clause hallucinations
@@ -207,6 +231,7 @@ def process_uploaded_files(
 # Batch Retrieval for All Clauses (Kills N+1 LLM & Embedding calls)
 # ---------------------------------------------------------------------------
 
+@traceable
 def batch_retrieve(
     clauses: list[dict | Clause],
     org_id: str | None = None,
@@ -230,7 +255,7 @@ def batch_retrieve(
     if not clauses:
         return []
 
-    org_id = org_id or get_config("POLICY_ORG_ID", "nexify")
+    org_id = org_id or get_default_org_id()
     top_k = top_k or int(get_config("RETRIEVAL_TOP_K", "5"))
     w_dense = float(get_config("RRF_WEIGHT_DENSE", "0.7"))
     w_sparse = float(get_config("RRF_WEIGHT_SPARSE", "0.3"))
@@ -300,7 +325,7 @@ def document_retriever(state: SubState) -> SubState:
     if not query_text or not query_text.strip():
         return {"retrived_docs": []}
 
-    org_id = get_config("POLICY_ORG_ID", "nexify")
+    org_id = state.get("org_id", get_default_org_id())
     top_k = int(get_config("RETRIEVAL_TOP_K", "5"))
     w_dense = float(get_config("RRF_WEIGHT_DENSE", "0.7"))
     w_sparse = float(get_config("RRF_WEIGHT_SPARSE", "0.3"))
@@ -318,4 +343,25 @@ def document_retriever(state: SubState) -> SubState:
     )
     docs = deduplicate_parents_max_pooling(scored_chunks, store, top_k=top_k)
 
-    return {"retrived_docs": docs}
+    policy_sections = store.get_policy_sections(org_id)
+    clause_type = (
+        clause_data.get("clause_type", "")
+        if isinstance(clause_data, dict)
+        else getattr(clause_data, "clause_type", "")
+    )
+    topic_found = any(
+        policy_topic_matches(
+            clause_type,
+            section.metadata.get("heading", ""),
+            section.text,
+        )
+        for section in policy_sections
+    )
+    return {
+        "retrived_docs": docs,
+        "policy_evidence_status": (
+            "retrieval_failed"
+            if not policy_sections
+            else "topic_found" if topic_found else "silence_verified"
+        ),
+    }

@@ -12,6 +12,7 @@ then loops back to document_retriever for a second search attempt.
 
 from core.model import query_generator_llm
 from core.state import SubState
+from prompts.query_generator import QUERY_GENERATOR_SYSTEM_PROMPT
 
 
 def generate_relevant_docs_node(state: SubState) -> dict:
@@ -30,11 +31,7 @@ def generate_relevant_docs_node(state: SubState) -> dict:
         else getattr(clause_data, "clause_type", "general")
     )
 
-    prompt = f"""You are a contract compliance assistant.
-
-Your task is to generate a focused internal search query that will help retrieve
-relevant internal policy documents needed to review the following contract clause
-for compliance.
+    prompt = f"""{QUERY_GENERATOR_SYSTEM_PROMPT}
 
 Clause Type: {clause_type}
 
@@ -42,9 +39,6 @@ Clause Text:
 \"\"\"
 {clause_text}
 \"\"\"
-
-Return only the search query as a single-line string, with no additional
-explanation or formatting.
 """
 
     for attempt in range(3):

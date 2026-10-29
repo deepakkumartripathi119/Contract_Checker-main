@@ -12,6 +12,9 @@ Phase 2 Modernization:
 from langgraph.types import Send
 from core.state import AgentState
 from pipeline.nodes.retriever import batch_retrieve, document_retriever
+from core.vector_store import get_vector_store
+from core.model import get_default_org_id
+from pipeline.nodes.retriever import policy_topic_matches
 from pipeline.nodes.query_generator import generate_relevant_docs_node
 from pipeline.nodes.reranker import Reranker
 
@@ -29,24 +32,48 @@ def ReRanker_Sender(state: AgentState) -> list:
         return []
 
     # Run batch retrieval across all clauses in a single batch network call
+    retrieval_failed = False
     try:
-        batch_docs, embeddings = batch_retrieve(clauses, return_embeddings=True)
+        current_org = state.get("org_id", get_default_org_id())
+        batch_docs, embeddings = batch_retrieve(
+            clauses,
+            org_id=current_org,
+            return_embeddings=True,
+        )
     except Exception as e:
         print(f"[Warning] batch_retrieve failed: {e}. Falling back to per-clause retrieval.")
+        retrieval_failed = True
         batch_docs = [[] for _ in clauses]
         embeddings = [[] for _ in clauses]
 
     sends = []
     proceed_batch = []
+    policy_sections = get_vector_store().get_policy_sections(current_org)
     for clause, docs, embedding in zip(clauses, batch_docs, embeddings):
         clause_payload = (
             clause.model_dump() if hasattr(clause, "model_dump") else clause
         )
+        clause_type = clause_payload.get("clause_type", "Unknown")
+        topic_exists = any(
+            policy_topic_matches(
+                clause_type,
+                section.metadata.get("heading", ""),
+                section.text,
+            )
+            for section in policy_sections
+        )
+        policy_status = (
+            "retrieval_failed"
+            if retrieval_failed or not policy_sections
+            else "topic_found" if topic_exists else "silence_verified"
+        )
         substate = {
+            "org_id": current_org,
             "clause": clause_payload,
             "retrived_docs": docs,
             "clause_embedding": embedding,
             "retry_count": 0,
+            "policy_evidence_status": policy_status,
         }
         
         # 1. Initial Rerank
