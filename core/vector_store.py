@@ -121,6 +121,10 @@ class VectorStoreBackend(ABC):
         """Delete all chunks for an org (used when re-uploading a policy)."""
 
     @abstractmethod
+    def replace_org_chunks(self, org_id: str, chunks: list[Chunk]) -> None:
+        """Atomically replace all chunks for an org within a single transaction."""
+
+    @abstractmethod
     def list_docs(self, org_id: str) -> list[str]:
         """Return distinct doc_ids ingested for an org."""
 
@@ -374,6 +378,35 @@ class SQLiteVectorStore(VectorStoreBackend):
         """Remove all chunks for an org — call before re-ingesting a policy."""
         with self._connect() as conn:
             conn.execute("DELETE FROM chunks WHERE org_id = ?", (org_id,))
+        self._bm25_indices.pop(org_id, None)
+
+    def replace_org_chunks(self, org_id: str, chunks: list[Chunk]) -> None:
+        """Atomically replace all chunks for an org within a single transaction."""
+        rows = []
+        for c in chunks:
+            blob = self._embed_to_blob(c.embedding) if c.embedding else None
+            rows.append((
+                c.id,
+                org_id,
+                c.doc_id,
+                c.parent_id,
+                c.chunk_type,
+                c.text,
+                c.breadcrumb,
+                json.dumps(c.metadata),
+                blob,
+            ))
+        with self._connect() as conn:
+            conn.execute("DELETE FROM chunks WHERE org_id = ?", (org_id,))
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO chunks
+                  (id, org_id, doc_id, parent_id, chunk_type,
+                   text, breadcrumb, metadata, embedding)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                rows,
+            )
         self._bm25_indices.pop(org_id, None)
 
     def list_docs(self, org_id: str) -> list[str]:

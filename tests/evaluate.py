@@ -117,6 +117,17 @@ POLICY_SECTIONS = [
         ),
         "breadcrumb": "[Doc: Nexify Policy | Section 3: Dispute Resolution]",
     },
+    {
+        "id": "sec-4",
+        "num": "4",
+        "title": "4. Insurance Requirements",
+        "text": (
+            "4. Insurance Requirements\n"
+            "Vendor shall maintain general liability insurance with a minimum coverage limit of $2,000,000 per occurrence "
+            "during the term of this Agreement. Policies must name Nexify Solutions as an additional insured."
+        ),
+        "breadcrumb": "[Doc: Nexify Policy | Section 4: Insurance Requirements]",
+    },
 ]
 
 
@@ -375,7 +386,7 @@ def run_ablation_benchmark() -> dict:
     preds_a = [run_retrieval_dense_only(tc, store, embedder, top_k=3) for tc in test_cases]
     lat_a = round(((time.perf_counter() - t0) / len(test_cases)) * 1000, 2)
     metrics_a = calculate_retrieval_metrics(preds_a, targets)
-    verdicts_a = [tc.expected_compliant if preds_a[i] else True for i, tc in enumerate(test_cases)]
+    verdicts_a = [_predict_compliance(tc.clause_text, preds_a[i]) for i, tc in enumerate(test_cases)]
     f1_a = calculate_verdict_f1(verdicts_a, expected_verdicts)
 
     results["Config A: Dense Only"] = {
@@ -391,7 +402,7 @@ def run_ablation_benchmark() -> dict:
     preds_b = [run_retrieval_sparse_only(tc, store, top_k=3) for tc in test_cases]
     lat_b = round(((time.perf_counter() - t0) / len(test_cases)) * 1000, 2)
     metrics_b = calculate_retrieval_metrics(preds_b, targets)
-    verdicts_b = [tc.expected_compliant if preds_b[i] else True for i, tc in enumerate(test_cases)]
+    verdicts_b = [_predict_compliance(tc.clause_text, preds_b[i]) for i, tc in enumerate(test_cases)]
     f1_b = calculate_verdict_f1(verdicts_b, expected_verdicts)
 
     results["Config B: BM25 Sparse Only"] = {
@@ -407,7 +418,7 @@ def run_ablation_benchmark() -> dict:
     preds_c = [run_retrieval_naive_hybrid(tc, store, embedder, top_k=3) for tc in test_cases]
     lat_c = round(((time.perf_counter() - t0) / len(test_cases)) * 1000, 2)
     metrics_c = calculate_retrieval_metrics(preds_c, targets)
-    verdicts_c = [tc.expected_compliant if preds_c[i] else True for i, tc in enumerate(test_cases)]
+    verdicts_c = [_predict_compliance(tc.clause_text, preds_c[i]) for i, tc in enumerate(test_cases)]
     f1_c = calculate_verdict_f1(verdicts_c, expected_verdicts)
 
     results["Config C: Naive Fixed Hybrid"] = {

@@ -74,9 +74,9 @@ def _clause_fields(item: dict) -> tuple[str, str, list[Document]]:
     clause_data = item.get("clause", {})
     clause_text = remove_synthetic_expected_annotations(
         (
-        clause_data.get("text", "")
-        if isinstance(clause_data, dict)
-        else getattr(clause_data, "text", "")
+            clause_data.get("text", "")
+            if isinstance(clause_data, dict)
+            else getattr(clause_data, "text", "")
         )
     )
     clause_type = (
@@ -197,9 +197,9 @@ def compliance_checker(state: SubState) -> dict:
     clause_data = state.get("clause", {})
     clause_text = remove_synthetic_expected_annotations(
         (
-        clause_data.get("text", "")
-        if isinstance(clause_data, dict)
-        else getattr(clause_data, "text", "")
+            clause_data.get("text", "")
+            if isinstance(clause_data, dict)
+            else getattr(clause_data, "text", "")
         )
     )
     clause_type = (
@@ -212,10 +212,17 @@ def compliance_checker(state: SubState) -> dict:
     clause_embedding = state.get("clause_embedding")
 
     # 2. Two-Tier Cache Check (Tier 1 SHA256 & Tier 2 Semantic)
-    cached_verdict = cache.get_verdict(clause_text, org_id, embedding=clause_embedding)
+    cached_verdict = cache.get_verdict(
+        clause_text,
+        org_id,
+        clause_type=clause_type,
+        embedding=clause_embedding,
+    )
     if cached_verdict:
-        cached_verdict["clause_title"] = clause_type
-        return {"answer": [cached_verdict]}
+        cached_copy = dict(cached_verdict)
+        cached_copy["clause_title"] = clause_type
+        cached_copy["clause_text"] = clause_text
+        return {"answer": [cached_copy]}
 
     docs = _topic_filtered_docs(clause_type, state.get("relevant_docs", []))
     docs_str = _combine_docs_with_sources(docs)
@@ -247,7 +254,13 @@ def compliance_checker(state: SubState) -> dict:
             if evidence_status in {"searched", "silence_verified"}
             else _retrieval_review_result(item)
         )
-        cache.set_verdict(org_id, clause_text, result, embedding=clause_embedding)
+        cache.set_verdict(
+            org_id,
+            clause_text,
+            result,
+            clause_type=clause_type,
+            embedding=clause_embedding,
+        )
         return {"answer": [result]}
 
     system_instruction = COMPLIANCE_SYSTEM_PROMPT.format(company_name=org_id)
@@ -282,9 +295,16 @@ Internal Policy (retrieved):
     # Deterministic Citation Verification (Phase 4)
     compliance_result = verify_compliance_result(compliance_result, docs)
     compliance_result["clause_title"] = clause_type
+    compliance_result["clause_text"] = clause_text
 
     # Persist in Two-Tier Cache for future requests
-    cache.set_verdict(org_id, clause_text, compliance_result, embedding=clause_embedding)
+    cache.set_verdict(
+        org_id,
+        clause_text,
+        compliance_result,
+        clause_type=clause_type,
+        embedding=clause_embedding,
+    )
 
     return {"answer": [compliance_result]}
 
@@ -318,14 +338,18 @@ def evaluate_micro_batch(
     uncached_indices: list[int] = []
 
     for i, item in enumerate(clauses_with_docs):
-        c_text, _, _ = _clause_fields(item)
+        c_text, c_type, docs = _clause_fields(item)
         cached = cache.get_verdict(
-            c_text, org_id, embedding=item.get("clause_embedding")
+            c_text,
+            org_id,
+            clause_type=c_type,
+            embedding=item.get("clause_embedding"),
         )
         if cached:
-            c_type = c_data.get("clause_type", "Unknown") if isinstance(c_data, dict) else getattr(c_data, "clause_type", "Unknown")
-            cached["clause_title"] = c_type
-            cached_results.append(cached)
+            cached_copy = dict(cached)
+            cached_copy["clause_title"] = c_type
+            cached_copy["clause_text"] = c_text
+            cached_results.append(cached_copy)
         else:
             cached_results.append(None)
             uncached_indices.append(i)
@@ -380,7 +404,7 @@ Retrieved Policy Evidence:
 
         for res_dict, idx in zip(raw_results, uncached_indices):
             item = clauses_with_docs[idx]
-            _, _, docs = _clause_fields(item)
+            c_text, c_type, docs = _clause_fields(item)
             if not docs:
                 res_dict = (
                     _no_policy_result(item)
@@ -392,31 +416,35 @@ Retrieved Policy Evidence:
                 )
             else:
                 res_dict = _normalize_batch_result(res_dict, item, docs)
-            c_text, _, _ = _clause_fields(item)
+
+            res_dict["clause_title"] = c_type
+            res_dict["clause_text"] = c_text
 
             cache.set_verdict(
                 org_id,
                 c_text,
                 res_dict,
+                clause_type=c_type,
                 embedding=item.get("clause_embedding"),
             )
             cached_results[idx] = res_dict
         return [r for r in cached_results if r is not None]
     except Exception as e:
-        print(f"[ERROR] Micro-batch invoke failed: {e}")
-        return [
-            _system_error_result(
-                item,
-                f"batch LLM response was invalid or unavailable ({e})",
-            )
-            for item in clauses_with_docs
-        ]
-
-    # Fallback for remaining uncached
-    for idx in uncached_indices:
-        res = compliance_checker(clauses_with_docs[idx])
-        answers = res.get("answer", [])
-        if answers:
-            cached_results[idx] = answers[0]
-
-    return [r for r in cached_results if r is not None]
+        print(f"[ERROR] Micro-batch invoke failed: {e}. Falling back to sequential evaluation.")
+        for idx in uncached_indices:
+            try:
+                res = compliance_checker(clauses_with_docs[idx])
+                answers = res.get("answer", [])
+                if answers:
+                    cached_results[idx] = answers[0]
+                else:
+                    cached_results[idx] = _system_error_result(
+                        clauses_with_docs[idx],
+                        f"Compliance check returned no answer ({e})",
+                    )
+            except Exception as item_err:
+                cached_results[idx] = _system_error_result(
+                    clauses_with_docs[idx],
+                    f"Sequential compliance check failed ({item_err})",
+                )
+        return [r for r in cached_results if r is not None]

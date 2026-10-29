@@ -87,7 +87,6 @@ def remove_synthetic_expected_annotations(text: str) -> str:
 
 def clean_extracted_text(text: str) -> str:
     """Remove parser-only Markdown/page markers while preserving source wording."""
-    text = remove_synthetic_expected_annotations(text)
     text = re.sub(r"(?m)^\s*\[Page\s+\d+\]\s*$", "", text)
     text = re.sub(r"(?m)^\s*#{1,6}\s+", "", text)
     text = re.sub(r"(?m)^\s*[*_`]+([^*_`]+)[*_`]+\s*$", r"\1", text)
@@ -459,7 +458,7 @@ def parse_vendor_contract(
 
     The caller (app.py) checks used_llm_fallback and routes accordingly.
     """
-    markdown = remove_synthetic_expected_annotations(_pdf_to_markdown(pdf_bytes))
+    markdown = _pdf_to_markdown(pdf_bytes)
     sections = _split_by_headings(markdown, doc_name)
 
     if not sections:

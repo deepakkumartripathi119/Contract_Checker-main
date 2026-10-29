@@ -185,10 +185,6 @@ def process_uploaded_files(
     """
     org_id = org_id or get_default_org_id()
     store = get_vector_store()
-    
-    # WIPE ghost data before ingesting new policies to prevent missing-clause hallucinations
-    store.clear_org(org_id)
-
     embedding_model = get_embedding_model()
 
     all_chunks: list[Chunk] = []
@@ -211,16 +207,22 @@ def process_uploaded_files(
     if not child_chunks:
         return doc_ids
 
-    # Batch embed all child chunks in a single call
+    # Batch embed all child chunks in a single call (staged validation)
     texts = [c.text for c in child_chunks]
     embeddings = embedding_model.embed_documents(texts)
 
     for chunk, emb in zip(child_chunks, embeddings):
         chunk.embedding = emb
 
-    store.add_chunks(org_id, all_chunks)
+    # Atomic staged swap: replace existing chunks only after parsing and embedding succeed
+    store.replace_org_chunks(org_id, all_chunks)
 
-    # Invalidate cache for this org when policy changes (Phase 4)
+    # Invalidate cache and bump policy version for this org
+    try:
+        from core.tenant import bump_tenant_policy_version
+        bump_tenant_policy_version(org_id)
+    except Exception:
+        pass
     from core.cache import get_cache
     get_cache().invalidate(org_id)
 

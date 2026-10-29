@@ -10,11 +10,12 @@ CacheBackend (ABC)
 Two-Tier Cache Hierarchy
 ------------------------
 Tier 1: SHA256 Exact-Match (<1ms, $0 LLM cost)
-  - Key: SHA256(org_id + ":" + normalized(clause_text))
+  - Key: SHA256(org_id + ":" + normalized(clause_text) + ":" + clause_type + ":" + version)
   - Catches repeated standard/boilerplate clauses.
 
 Tier 2: Semantic Cosine Match (with Guardrails)
   - Compares cosine similarity of clause embeddings (threshold >= 0.95).
+  - Scoped to identical clause_type and active compliance rule version.
   - CRITICAL GUARDS to prevent false semantic equivalence:
     1. Numeric Guard: Extracts all numbers (\b\d+(?:\.\d+)?\b). If numbers differ
        (e.g., "30 days" vs "90 days"), the match is REJECTED.
@@ -41,6 +42,8 @@ from typing import Optional
 import numpy as np
 from langsmith import traceable
 
+
+COMPLIANCE_EVALUATION_VERSION = os.getenv("COMPLIANCE_EVALUATION_VERSION", "v1.0")
 
 _NEGATION_TOKENS = {
     "not", "no", "never", "neither", "nor", "none", "without",
@@ -72,6 +75,8 @@ class CacheBackend(ABC):
         self,
         clause_text: str,
         org_id: str,
+        clause_type: str = "",
+        version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
         threshold: float = 0.95,
     ) -> Optional[dict]:
@@ -86,6 +91,8 @@ class CacheBackend(ABC):
         org_id: str,
         clause_text: str,
         verdict: dict,
+        clause_type: str = "",
+        version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
     ) -> None:
         """Store verdict under exact key and persist embedding for semantic tier."""
@@ -100,10 +107,17 @@ class CacheBackend(ABC):
         return re.sub(r"\s+", " ", text.strip().lower())
 
     @staticmethod
-    def make_key(clause_text: str, org_id: str) -> str:
-        """SHA256(org_id + ":" + normalize(clause_text))."""
+    def make_key(
+        clause_text: str,
+        org_id: str,
+        clause_type: str = "",
+        version: str = "",
+    ) -> str:
+        """SHA256(org_id + ":" + normalize(clause_text) + ":" + clause_type + ":" + version)."""
         norm = re.sub(r"\s+", " ", clause_text.strip().lower())
-        payload = f"{org_id}:{norm}".encode()
+        c_type = (clause_type or "").strip().lower()
+        ver = version or COMPLIANCE_EVALUATION_VERSION
+        payload = f"{org_id}:{norm}:{c_type}:{ver}".encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
     @staticmethod
@@ -127,6 +141,8 @@ CREATE TABLE IF NOT EXISTS compliance_cache (
     cache_key     TEXT PRIMARY KEY,
     org_id        TEXT NOT NULL,
     clause_text   TEXT NOT NULL,
+    clause_type   TEXT NOT NULL DEFAULT '',
+    version       TEXT NOT NULL DEFAULT 'v1.0',
     value         TEXT NOT NULL,
     embedding     BLOB,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
@@ -169,6 +185,11 @@ class SQLiteCache(CacheBackend):
                 conn.execute("ALTER TABLE compliance_cache ADD COLUMN clause_text TEXT NOT NULL DEFAULT ''")
             if "embedding" not in columns:
                 conn.execute("ALTER TABLE compliance_cache ADD COLUMN embedding BLOB")
+            if "clause_type" not in columns:
+                conn.execute("ALTER TABLE compliance_cache ADD COLUMN clause_type TEXT NOT NULL DEFAULT ''")
+            if "version" not in columns:
+                conn.execute("ALTER TABLE compliance_cache ADD COLUMN version TEXT NOT NULL DEFAULT 'v1.0'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_org_type_ver ON compliance_cache(org_id, clause_type, version);")
 
     @staticmethod
     def _embed_to_blob(embedding: list[float]) -> bytes:
@@ -195,7 +216,9 @@ class SQLiteCache(CacheBackend):
             row = conn.execute(
                 "SELECT value FROM compliance_cache WHERE cache_key = ?", (key,)
             ).fetchone()
-        return json.loads(row["value"]) if row else None
+        if not row:
+            return None
+        return json.loads(row["value"])
 
     def set(self, key: str, value: dict) -> None:
         """Direct store under exact key."""
@@ -203,13 +226,15 @@ class SQLiteCache(CacheBackend):
             conn.execute(
                 """
                 INSERT OR REPLACE INTO compliance_cache
-                  (cache_key, org_id, clause_text, value, embedding)
-                VALUES (?, ?, ?, ?, ?)
+                  (cache_key, org_id, clause_text, clause_type, version, value, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     key,
                     value.get("org_id", "default"),
                     value.get("clause_text", ""),
+                    value.get("clause_type", ""),
+                    value.get("version", COMPLIANCE_EVALUATION_VERSION),
                     json.dumps(value),
                     None,
                 ),
@@ -219,18 +244,21 @@ class SQLiteCache(CacheBackend):
         self,
         clause_text: str,
         org_id: str,
+        clause_type: str = "",
+        version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
         threshold: float = 0.95,
     ) -> Optional[dict]:
         """
         Two-tier lookup:
-        1. Tier 1: SHA256 exact match on normalized clause text.
+        1. Tier 1: SHA256 exact match on normalized clause text, org_id, clause_type, and version.
         2. Tier 2: Semantic cosine match with numeric-value and negation guards.
         """
         if not clause_text or not clause_text.strip():
             return None
 
-        key = self.make_key(clause_text, org_id)
+        ver = version or COMPLIANCE_EVALUATION_VERSION
+        key = self.make_key(clause_text, org_id, clause_type=clause_type, version=ver)
 
         # --- Tier 1: Exact Match (<1ms) ---
         with self._connect() as conn:
@@ -253,14 +281,20 @@ class SQLiteCache(CacheBackend):
         q_nums = self.extract_numbers(clause_text)
         q_negs = self.extract_negations(clause_text)
 
+        params: list[str] = [org_id, ver]
+        clause_type_filter = ""
+        if clause_type:
+            clause_type_filter = "AND clause_type = ?"
+            params.append(clause_type)
+
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT cache_key, clause_text, value, embedding
                 FROM   compliance_cache
-                WHERE  org_id = ? AND embedding IS NOT NULL
+                WHERE  org_id = ? AND version = ? {clause_type_filter} AND embedding IS NOT NULL
                 """,
-                (org_id,),
+                params,
             ).fetchall()
 
         if not rows:
@@ -305,26 +339,31 @@ class SQLiteCache(CacheBackend):
         org_id: str,
         clause_text: str,
         verdict: dict,
+        clause_type: str = "",
+        version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
     ) -> None:
         """Store verdict with both exact key and optional embedding for semantic tier."""
         if not clause_text or not clause_text.strip():
             return
 
-        key = self.make_key(clause_text, org_id)
+        ver = version or COMPLIANCE_EVALUATION_VERSION
+        key = self.make_key(clause_text, org_id, clause_type=clause_type, version=ver)
         blob = self._embed_to_blob(embedding) if embedding else None
 
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO compliance_cache
-                  (cache_key, org_id, clause_text, value, embedding)
-                VALUES (?, ?, ?, ?, ?)
+                  (cache_key, org_id, clause_text, clause_type, version, value, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     key,
                     org_id,
                     clause_text,
+                    clause_type,
+                    ver,
                     json.dumps(verdict),
                     blob,
                 ),

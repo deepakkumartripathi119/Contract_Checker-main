@@ -16,6 +16,26 @@ st.session_state.setdefault("retrievers", [])
 from pipeline.graph import app
 from pipeline.subgraph import sub_graph
 
+def assemble_display_results(
+    compliance_results: list[dict],
+    missing_clauses: list[dict],
+    used_llm_fallback: bool,
+    clause_groups: list[dict] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Assemble and deduplicate results for UI presentation.
+    Returns: (present_results, deduplicated_missing_results)
+    """
+    deduped_missing = []
+    seen_req = set()
+    for m in missing_clauses:
+        req_id = m.get("policy_requirement_id") or m.get("clause_title")
+        if req_id not in seen_req:
+            seen_req.add(req_id)
+            deduped_missing.append(m)
+    return compliance_results, deduped_missing
+
+
 # ---------------------------------------------------------------------------
 # Sidebar — uploaded policy files & retrievers
 # ---------------------------------------------------------------------------
@@ -240,16 +260,19 @@ else:
 
                         st.markdown("---")
 
+                    present_results, display_missing = assemble_display_results(
+                        data, missing_results, used_llm_fallback, clause_groups
+                    )
+
                     if not used_llm_fallback:
                         result_queues = {}
-                        for result in data:
+                        for result in present_results:
                             if not result.get("is_missing_clause"):
                                 key = " ".join(
                                     result.get("clause_text", "").lower().split()
                                 )
                                 result_queues.setdefault(key, []).append(result)
 
-                        result_index = 0
                         for idx, group in enumerate(clause_groups, 1):
                             st.markdown(
                                 f"### {idx}. {group['clause_type']} (Pages: {group['page']})"
@@ -271,8 +294,9 @@ else:
                                         "No compliance result was returned for "
                                         f"{child['clause_type']}."
                                     )
+                        start_missing_idx = child_clause_count + 1
                     else:
-                        for idx, clause in enumerate(data, 1):
+                        for idx, clause in enumerate(present_results, 1):
                             compliant_icon = "✅" if clause["compliant"] else "❌"
                             heading = (
                                 f"### {idx}. {clause['clause_title']}"
@@ -280,15 +304,16 @@ else:
                                 else f"### {idx}. {compliant_icon} {clause['clause_title']}"
                             )
                             render_compliance_result(clause, heading)
+                        start_missing_idx = len(present_results) + 1
 
-                    if not used_llm_fallback:
-                        for result_index, clause in enumerate(
-                            missing_results, child_clause_count + 1
-                        ):
-                            render_compliance_result(
-                                clause,
-                                f"### {result_index}. {clause['clause_title']}",
-                            )
+                    # Render missing clauses for BOTH heading-based and LLM-fallback paths
+                    for result_index, clause in enumerate(
+                        display_missing, start_missing_idx
+                    ):
+                        render_compliance_result(
+                            clause,
+                            f"### {result_index}. {clause['clause_title']}",
+                        )
         else:
             clause_text = st.text_area(
                 "Enter Clause Text", placeholder="Paste the clause text here..."

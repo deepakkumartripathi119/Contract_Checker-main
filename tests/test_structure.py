@@ -961,5 +961,196 @@ class TestProjectStructure(unittest.TestCase):
         self.assertGreater(results["Config D: Full Modern Pipeline"]["recall@3"], 50.0)
 
 
+
+    def test_micro_batch_mixed_cache_hits_and_order_preservation(self):
+        """Micro-batch preserves exact input order and titles across mixed cache hits."""
+        cache = SQLiteCache(db_path=":memory:")
+        clause_b_text = "Vendor shall maintain general liability insurance of $5,000,000."
+        cached_verdict_b = {
+            "clause_text": clause_b_text,
+            "clause_title": "Insurance",
+            "compliant": True,
+            "reason": "Exceeds required limit.",
+            "policy_source": "Policy Section 4",
+        }
+        cache.set_verdict("org_batch", clause_b_text, cached_verdict_b, clause_type="Insurance")
+
+        item_a = {
+            "org_id": "org_batch",
+            "clause": {"text": "Vendor agrees to Net 60 payment terms.", "clause_type": "Payment"},
+            "relevant_docs": [Document(page_content="Payment within 45 days.", metadata={"source": "P1"})],
+        }
+        item_b = {
+            "org_id": "org_batch",
+            "clause": {"text": clause_b_text, "clause_type": "Insurance"},
+            "relevant_docs": [],
+        }
+        item_c = {
+            "org_id": "org_batch",
+            "clause": {"text": "Disputes resolved in Tokyo courts.", "clause_type": "Dispute Resolution"},
+            "relevant_docs": [Document(page_content="Arbitration in New York.", metadata={"source": "P3"})],
+        }
+
+        mock_llm_resp = MagicMock()
+        mock_llm_resp.results = [
+            MagicMock(
+                clause_id=1,
+                status="Compliant",
+                reason="Longer payment window is favorable.",
+                suggested_revision=None,
+                exact_policy_quote="Payment within 45 days.",
+                model_dump=lambda: {
+                    "clause_id": 1,
+                    "status": "Compliant",
+                    "reason": "Longer payment window is favorable.",
+                    "suggested_revision": None,
+                    "exact_policy_quote": "Payment within 45 days.",
+                },
+            ),
+            MagicMock(
+                clause_id=2,
+                status="NON_COMPLIANT",
+                reason="Tokyo litigation contradicts NY arbitration.",
+                suggested_revision="Change forum to NY arbitration.",
+                exact_policy_quote="Arbitration in New York.",
+                model_dump=lambda: {
+                    "clause_id": 2,
+                    "status": "NON_COMPLIANT",
+                    "reason": "Tokyo litigation contradicts NY arbitration.",
+                    "suggested_revision": "Change forum to NY arbitration.",
+                    "exact_policy_quote": "Arbitration in New York.",
+                },
+            ),
+        ]
+
+        with patch("pipeline.nodes.compliance_checker.get_cache", return_value=cache):
+            with patch("pipeline.nodes.compliance_checker.micro_batch_compliance_model") as mock_model:
+                mock_model.invoke.return_value = mock_llm_resp
+                results = evaluate_micro_batch([item_a, item_b, item_c])
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0]["clause_title"], "Payment")
+        self.assertEqual(results[1]["clause_title"], "Insurance")
+        self.assertTrue(results[1].get("cached"))
+        self.assertEqual(results[2]["clause_title"], "Dispute Resolution")
+        self.assertFalse(results[2]["compliant"])
+
+    def test_cache_versioning_and_tenant_isolation(self):
+        """Cached verdicts are strictly isolated by tenant ID and policy/evaluator version."""
+        cache = SQLiteCache(db_path=":memory:")
+        clause = "Vendor shall submit quarterly compliance reports."
+        verdict_alpha = {
+            "clause_text": clause,
+            "compliant": True,
+            "reason": "Quarterly reporting acceptable.",
+            "policy_source": "Alpha Policy",
+        }
+
+        # Store for tenant_alpha at version v1.0
+        cache.set_verdict("tenant_alpha", clause, verdict_alpha, clause_type="Reporting", version="v1.0")
+
+        # 1. Lookup for tenant_beta must be None (strict tenant boundary)
+        cached_beta = cache.get_verdict(clause, "tenant_beta", clause_type="Reporting", version="v1.0")
+        self.assertIsNone(cached_beta)
+
+        # 2. Lookup for tenant_alpha at newer version v2.0 must be None (version safety)
+        cached_v2 = cache.get_verdict(clause, "tenant_alpha", clause_type="Reporting", version="v2.0")
+        self.assertIsNone(cached_v2)
+
+        # 3. Lookup for tenant_alpha with different clause_type must be None
+        cached_diff_type = cache.get_verdict(clause, "tenant_alpha", clause_type="Audit", version="v1.0")
+        self.assertIsNone(cached_diff_type)
+
+        # 4. Correct lookup succeeds
+        cached_alpha = cache.get_verdict(clause, "tenant_alpha", clause_type="Reporting", version="v1.0")
+        self.assertIsNotNone(cached_alpha)
+        self.assertEqual(cached_alpha["reason"], "Quarterly reporting acceptable.")
+
+    def test_obligation_aware_breach_notification_scenarios(self):
+        """Breach notification requires actual notification obligations within strict deadlines."""
+        policy_title = "Data Security & Breach Notification"
+        policy_text = "Vendor must notify customer of any security breach or incident within 24 hours."
+
+        # Scenario 1: Mere mention of customer data/security without notification
+        clauses_no_notif = [{"clause_type": "Security", "text": "Vendor shall maintain customer data encrypted at rest."}]
+        self.assertFalse(is_policy_section_covered(policy_title, policy_text, clauses_no_notif))
+
+        # Scenario 2: Notification promised, but with 14 business days deadline (weaker than 24h)
+        clauses_weak_deadline = [{"clause_type": "Incident Notification", "text": "Vendor shall notify customer of any security incident within 14 business days."}]
+        self.assertFalse(is_policy_section_covered(policy_title, policy_text, clauses_weak_deadline))
+
+        # Scenario 3: True compliant notification within 24 hours
+        clauses_valid = [{"clause_type": "Data Breach Notification", "text": "Vendor will alert customer of any confirmed data breach within 24 hours of discovery."}]
+        self.assertTrue(is_policy_section_covered(policy_title, policy_text, clauses_valid))
+
+    def test_obligation_aware_audit_rights_scenarios(self):
+        """Audit rights require explicit right to inspect/audit, not mere delivery of reports."""
+        policy_title = "Audit Rights"
+        policy_text = "Customer reserves the right to audit and inspect vendor books, records, and facilities."
+
+        # Scenario 1: Vendor only delivers annual audit reports (e.g. SOC 2)
+        clauses_only_reports = [{"clause_type": "Compliance", "text": "Vendor will provide annual audit report (SOC 2) upon request."}]
+        self.assertFalse(is_policy_section_covered(policy_title, policy_text, clauses_only_reports))
+
+        # Scenario 2: Vendor explicitly permits customer audit / inspection of records
+        clauses_audit_rights = [{"clause_type": "Inspection Rights", "text": "Customer is entitled to inspect books and records of Vendor upon reasonable prior notice."}]
+        self.assertTrue(is_policy_section_covered(policy_title, policy_text, clauses_audit_rights))
+
+    def test_staged_upload_preserves_existing_policy_on_failure(self):
+        """Staged upload preserves existing active policy chunks if parsing or embedding fails."""
+        from pipeline.nodes.retriever import process_uploaded_files
+        store = SQLiteVectorStore(db_path=":memory:")
+        initial_chunk = Chunk(
+            id="c-initial",
+            org_id="test_staged_org",
+            doc_id="doc1",
+            chunk_type="child",
+            text="Initial policy content",
+            breadcrumb="[Doc: Initial]",
+            metadata={"heading": "Initial"},
+            embedding=[0.1] * 16,
+        )
+        store.add_chunks("test_staged_org", [initial_chunk])
+        self.assertEqual(len(store.get_policy_sections("test_staged_org")), 1)
+
+        # Attempt to upload with a broken embedder that throws
+        mock_broken_embedder = MagicMock()
+        mock_broken_embedder.embed_documents.side_effect = RuntimeError("Embedding service unavailable (503)")
+
+        mock_file = MagicMock()
+        mock_file.read.return_value = b"%PDF-1.4 dummy content"
+        mock_file.name = "new_policy.pdf"
+
+        with patch("pipeline.nodes.retriever.get_vector_store", return_value=store):
+            with patch("pipeline.nodes.retriever.get_embedding_model", return_value=mock_broken_embedder):
+                with patch("pipeline.nodes.retriever.parse_policy_pdf", return_value=[
+                    Chunk(id="c2", org_id="test_staged_org", doc_id="doc2", chunk_type="child", text="New", breadcrumb="[Doc: New]", metadata={})
+                ]):
+                    with self.assertRaises(RuntimeError):
+                        process_uploaded_files([mock_file], org_id="test_staged_org")
+
+        # Verify initial policy chunks were NOT cleared or destroyed!
+        remaining = store.get_policy_sections("test_staged_org")
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].text, "Initial policy content")
+
+    def test_assemble_display_results_preserves_missing_on_llm_fallback(self):
+        """assemble_display_results renders missing findings regardless of LLM fallback status."""
+        from app import assemble_display_results
+        present = [{"clause_title": "Payment", "compliant": True, "clause_text": "Net 30"}]
+        missing = [{"policy_requirement_id": "policy:3", "clause_title": "Missing: Security", "compliant": False}]
+
+        # Normal structured extraction
+        p1, m1 = assemble_display_results(present, missing, used_llm_fallback=False)
+        self.assertEqual(len(p1), 1)
+        self.assertEqual(len(m1), 1)
+
+        # Fallback unstructured extraction
+        p2, m2 = assemble_display_results(present, missing, used_llm_fallback=True)
+        self.assertEqual(len(p2), 1)
+        self.assertEqual(len(m2), 1)
+        self.assertEqual(m2[0]["clause_title"], "Missing: Security")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,22 +1,23 @@
-"""LangGraph node for fallback contract clause extraction."""
+"""LangGraph node for fallback open-ended contract clause extraction."""
 
 from core.state import AgentState
 from core.model import extract_clause_llm, get_default_org_id
 from core.vector_store import get_vector_store
-from pipeline.nodes.document_parser import remove_synthetic_expected_annotations
 from prompts.clause_extraction import CLAUSE_EXTRACTION_SYSTEM_PROMPT
 
 
 def extract_clauses(state: AgentState) -> dict:
-    contract_text = remove_synthetic_expected_annotations(
-        state.get("contract", [""])[0]
-    )
+    """
+    Open-ended LLM-based clause extractor for contracts without heading boundaries.
+    Extracts substantive contractual clauses without restricting to policy allowlists.
+    """
+    contract_text = state.get("contract", [""])[0]
     org_id = state.get("org_id", get_default_org_id())
 
     store = get_vector_store()
     policy_sections = store.get_policy_sections(org_id)
 
-    allowed_types = {
+    known_types = {
         f"- {title}"
         for sec in policy_sections
         if (title := sec.metadata.get("heading", ""))
@@ -28,14 +29,11 @@ def extract_clauses(state: AgentState) -> dict:
         )
     }
 
-    allowed_types_str = "\n".join(sorted(allowed_types)) or (
-        "(No policy headings were available. Derive each clause type from the "
-        "contract's own heading or substantive topic.)"
-    )
+    known_types_str = "\n".join(sorted(known_types)) or "(None specified)"
     system_instruction = CLAUSE_EXTRACTION_SYSTEM_PROMPT.format(
-        allowed_clause_types=allowed_types_str
+        allowed_clause_types=known_types_str
     )
-    prompt = f'{system_instruction}\n\nContract:\n"""\n{contract_text}\n"""'
+    prompt = f'{system_instruction}\n\nContract Text:\n"""\n{contract_text}\n"""'
 
     for attempt in range(5):
         try:
