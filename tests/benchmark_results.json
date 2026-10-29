@@ -5,7 +5,7 @@
     "mrr@3": 0.543,
     "f1": 91.89,
     "citation_faithfulness": "N/A",
-    "avg_latency_ms": 0.1,
+    "avg_latency_ms": 0.08,
     "api_reduction": "0% (Baseline)"
   },
   "Config B: BM25 Sparse Only": {
@@ -14,7 +14,7 @@
     "mrr@3": 0.605,
     "f1": 91.89,
     "citation_faithfulness": "N/A",
-    "avg_latency_ms": 0.19,
+    "avg_latency_ms": 0.15,
     "api_reduction": "0% (No embeddings)"
   },
   "Config C: Naive Fixed Hybrid": {
@@ -22,9 +22,9 @@
     "recall@3": 70.37,
     "mrr@3": 0.556,
     "f1": 91.89,
-    "citation_faithfulness": "73.3%",
-    "avg_latency_ms": 0.46,
-    "api_reduction": "15%"
+    "citation_faithfulness": "44.4%",
+    "avg_latency_ms": 0.36,
+    "api_reduction": "0.0%"
   },
   "Config D: Full Modern Pipeline": {
     "recall@1": 44.44,
@@ -32,7 +32,7 @@
     "mrr@3": 0.537,
     "f1": 91.89,
     "citation_faithfulness": "100.0%",
-    "avg_latency_ms": 1.0,
+    "avg_latency_ms": 0.64,
     "api_reduction": "48.1%"
   }
 }

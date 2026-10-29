@@ -35,8 +35,36 @@ def _make_skip_verdict(
     clause_text: str,
     score: float,
     threshold: float,
+    org_id: str | None = None,
 ) -> dict:
     """Build a deterministic compliance verdict for irrelevant clauses (Zone 3)."""
+    behavior = "compliant"
+    if org_id:
+        try:
+            from core.tenant import get_tenant_config
+            cfg = get_tenant_config(org_id)
+            behavior = cfg.silent_policy_behavior
+        except Exception:
+            behavior = "compliant"
+
+    if behavior == "review_required":
+        return {
+            "clause_title": clause_type,
+            "clause_text": clause_text,
+            "policy_source": "NO INTERNAL POLICY FOUND",
+            "reason": (
+                f"Reranker confidence ({score:.4f}) is below applicability threshold ({threshold:.4f}). "
+                "No internal policy guidelines found for this clause type. "
+                "Under tenant policy rules, manual review is required for unaddressed clauses."
+            ),
+            "compliant": False,
+            "compliance_status": "review_required",
+            "clauses_internal": [],
+            "suggested_revision": "REVIEW_REQUIRED",
+            "exact_policy_quote": None,
+            "policy_evidence_status": "silence_verified",
+        }
+
     return {
         "clause_title": clause_type,
         "clause_text": clause_text,
@@ -47,6 +75,7 @@ def _make_skip_verdict(
             "Marked compliant by default."
         ),
         "compliant": True,
+        "compliance_status": "compliant",
         "clauses_internal": [],
         "suggested_revision": None,
         "exact_policy_quote": None,
@@ -67,6 +96,7 @@ def _make_retrieval_review_verdict(
             "Compliance cannot be established; manual review is required."
         ),
         "compliant": False,
+        "compliance_status": "review_required",
         "clauses_internal": [],
         "suggested_revision": "SYSTEM_UNAVAILABLE",
         "exact_policy_quote": None,
@@ -133,7 +163,7 @@ def Reranker(state: SubState) -> dict:
                 "relevant_docs": [],
                 "rerank_status": "skip",
                 "rerank_score": 0.0,
-                "answer": [_make_skip_verdict(clause_type, clause_text, 0.0, skip_threshold)],
+                "answer": [_make_skip_verdict(clause_type, clause_text, 0.0, skip_threshold, org_id=state.get("org_id"))],
             }
 
     # -----------------------------------------------------------------------
@@ -200,7 +230,7 @@ def Reranker(state: SubState) -> dict:
             "relevant_docs": [],
             "rerank_status": "skip",
             "rerank_score": top_score,
-            "answer": [_make_skip_verdict(clause_type, clause_text, top_score, skip_threshold)],
+            "answer": [_make_skip_verdict(clause_type, clause_text, top_score, skip_threshold, org_id=state.get("org_id"))],
         }
 
     # Zone 2: Ambiguous (between skip and retry threshold)

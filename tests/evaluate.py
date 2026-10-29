@@ -421,12 +421,22 @@ def run_ablation_benchmark() -> dict:
     verdicts_c = [_predict_compliance(tc.clause_text, preds_c[i]) for i, tc in enumerate(test_cases)]
     f1_c = calculate_verdict_f1(verdicts_c, expected_verdicts)
 
+    # Calculate Config C citation faithfulness and API call reduction dynamically
+    naive_verified = sum(
+        1 for tc, preds in zip(test_cases, preds_c)
+        if tc.target_section and any(tc.target_section.lower() in str(h).lower() for h in preds[:1])
+    )
+    citation_faithfulness_c = f"{(naive_verified / max(1, len(test_cases))) * 100:.1f}%"
+    config_c_api_calls = 2 * len(test_cases)
+    baseline_calls = 2 * len(test_cases)
+    api_reduction_c = f"{max(0, (1 - config_c_api_calls / max(1, baseline_calls)) * 100):.1f}%"
+
     results["Config C: Naive Fixed Hybrid"] = {
         **metrics_c,
         "f1": f1_c["f1"],
-        "citation_faithfulness": "73.3%",
+        "citation_faithfulness": citation_faithfulness_c,
         "avg_latency_ms": lat_c,
-        "api_reduction": "15%",
+        "api_reduction": api_reduction_c,
     }
 
     # --- Config D: Full Modern Pipeline ---

@@ -16,6 +16,13 @@ st.session_state.setdefault("retrievers", [])
 from pipeline.graph import app
 from pipeline.subgraph import sub_graph
 
+def _verdict_icon(result: dict) -> str:
+    status = result.get("compliance_status")
+    if status == "review_required":
+        return "⚠️"
+    return "✅" if result.get("compliant") else "❌"
+
+
 def assemble_display_results(
     compliance_results: list[dict],
     missing_clauses: list[dict],
@@ -45,6 +52,7 @@ with st.sidebar:
         "Organization ID",
         value=st.session_state.get("org_id", get_default_org_id()),
     )
+    st.caption("ℹ️ Prototype note: Organization ID serves as a tenant data partition key for index isolation. In production, this boundary is enforced via authenticated tenant sessions.")
     if org_id_input != st.session_state.get("org_id"):
         st.session_state.org_id = org_id_input
         st.session_state.submitted = False
@@ -282,9 +290,7 @@ else:
                                 matching_results = result_queues.get(key, [])
                                 if matching_results:
                                     result = matching_results.pop(0)
-                                    compliant_icon = (
-                                        "✅" if result["compliant"] else "❌"
-                                    )
+                                    compliant_icon = _verdict_icon(result)
                                     render_compliance_result(
                                         result,
                                         f"**{compliant_icon} {result['clause_title']}**",
@@ -297,7 +303,7 @@ else:
                         start_missing_idx = child_clause_count + 1
                     else:
                         for idx, clause in enumerate(present_results, 1):
-                            compliant_icon = "✅" if clause["compliant"] else "❌"
+                            compliant_icon = _verdict_icon(clause)
                             heading = (
                                 f"### {idx}. {clause['clause_title']}"
                                 if clause.get("is_missing_clause")

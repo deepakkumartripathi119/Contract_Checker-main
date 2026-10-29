@@ -11,6 +11,7 @@ Provides explicit tenant configuration boundaries:
 from __future__ import annotations
 
 import os
+import re
 import json
 import sqlite3
 from pathlib import Path
@@ -31,7 +32,7 @@ class TenantConfig(BaseModel):
         description="Active policy revision identifier, incremented on staged policy updates",
     )
     silent_policy_behavior: str = Field(
-        default_factory=lambda: os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "review_required"),
+        default_factory=lambda: os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "compliant"),
         description="Behavior when no internal policy addresses a contract topic: 'review_required' or 'compliant'",
     )
     favorable_deviation_behavior: str = Field(
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
     name                         TEXT NOT NULL,
     aliases                      TEXT NOT NULL DEFAULT '[]',
     active_policy_version        TEXT NOT NULL DEFAULT 'v1.0',
-    silent_policy_behavior       TEXT NOT NULL DEFAULT 'review_required',
+    silent_policy_behavior       TEXT NOT NULL DEFAULT 'compliant',
     favorable_deviation_behavior TEXT NOT NULL DEFAULT 'allow_favorable',
     supported_languages          TEXT NOT NULL DEFAULT '["en"]',
     updated_at                   TEXT NOT NULL DEFAULT (datetime('now'))
@@ -72,15 +73,24 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
 """
 
 _IN_MEMORY_TENANTS: dict[str, TenantConfig] = {}
+_MEM_CONN: Optional[sqlite3.Connection] = None
 
 
 def _get_tenant_db_conn() -> sqlite3.Connection:
+    global _MEM_CONN
     db_path = os.getenv(
         "SQLITE_DB_PATH",
         str(Path(__file__).resolve().parents[1] / "data" / "contract_checker.db"),
     )
-    if db_path != ":memory:":
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    if db_path == ":memory:":
+        if _MEM_CONN is None:
+            _MEM_CONN = sqlite3.connect(":memory:", check_same_thread=False)
+            _MEM_CONN.row_factory = sqlite3.Row
+            with _MEM_CONN:
+                _MEM_CONN.executescript(_TENANT_DB_TABLE)
+        return _MEM_CONN
+
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     with conn:
@@ -114,8 +124,8 @@ def get_tenant_config(org_id: str) -> TenantConfig:
             )
             _IN_MEMORY_TENANTS[org_id] = config
             return config
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[Warning] Error reading tenant configuration for '{org_id}': {exc}")
 
     # Default tenant config
     default_cfg = TenantConfig(
@@ -123,15 +133,14 @@ def get_tenant_config(org_id: str) -> TenantConfig:
         name=org_id.capitalize() if org_id not in ("default", "") else "Organization",
         aliases=[],
         active_policy_version="v1.0",
-        silent_policy_behavior=os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "review_required"),
+        silent_policy_behavior=os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "compliant"),
     )
     _IN_MEMORY_TENANTS[org_id] = default_cfg
     return default_cfg
 
 
 def save_tenant_config(config: TenantConfig) -> None:
-    """Save or update tenant configuration."""
-    _IN_MEMORY_TENANTS[config.org_id] = config
+    """Save or update tenant configuration. Fails visibly if persistence fails."""
     try:
         conn = _get_tenant_db_conn()
         with conn:
@@ -153,8 +162,11 @@ def save_tenant_config(config: TenantConfig) -> None:
                     json.dumps(config.supported_languages),
                 ),
             )
-    except Exception:
-        pass
+        _IN_MEMORY_TENANTS[config.org_id] = config
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to persist tenant configuration for '{config.org_id}': {e}"
+        ) from e
 
 
 def bump_tenant_policy_version(org_id: str) -> str:
@@ -171,4 +183,3 @@ def bump_tenant_policy_version(org_id: str) -> str:
     cfg.active_policy_version = new_ver
     save_tenant_config(cfg)
     return new_ver
-

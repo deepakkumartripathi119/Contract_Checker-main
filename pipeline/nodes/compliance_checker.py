@@ -101,6 +101,7 @@ def _system_error_result(
             docs[0].metadata.get("source", "Unknown") if docs else "Unknown"
         ),
         "compliant": False,
+        "compliance_status": "review_required",
         "reason": f"SYSTEM ERROR: {message}. Manual review required.",
         "clauses_internal": [],
         "suggested_revision": "SYSTEM_UNAVAILABLE",
@@ -109,8 +110,36 @@ def _system_error_result(
     }
 
 
-def _no_policy_result(item: dict) -> dict:
+def _no_policy_result(item: dict, org_id: str | None = None) -> dict:
     clause_text, clause_type, _ = _clause_fields(item)
+    resolved_org_id = org_id or item.get("org_id")
+    behavior = "compliant"
+    if resolved_org_id:
+        try:
+            from core.tenant import get_tenant_config
+            cfg = get_tenant_config(resolved_org_id)
+            behavior = cfg.silent_policy_behavior
+        except Exception:
+            behavior = "compliant"
+
+    if behavior == "review_required":
+        return {
+            "clause_title": clause_type,
+            "clause_text": clause_text,
+            "policy_source": "NO INTERNAL POLICY FOUND",
+            "reason": (
+                "The checked internal policy contains no applicable rule for this clause. "
+                "Under configured tenant rules, manual review is required for silent topics."
+            ),
+            "compliant": False,
+            "compliance_status": "review_required",
+            "clauses_internal": [],
+            "suggested_revision": "REVIEW_REQUIRED",
+            "exact_policy_quote": None,
+            "citation_verified": None,
+            "policy_evidence_status": "silence_verified",
+        }
+
     return {
         "clause_title": clause_type,
         "clause_text": clause_text,
@@ -120,6 +149,7 @@ def _no_policy_result(item: dict) -> dict:
             "Under the silent-policy rule, it is compliant by default."
         ),
         "compliant": True,
+        "compliance_status": "compliant",
         "clauses_internal": [],
         "suggested_revision": None,
         "exact_policy_quote": None,
@@ -139,6 +169,7 @@ def _retrieval_review_result(item: dict) -> dict:
             "Compliance cannot be established; manual review is required."
         ),
         "compliant": False,
+        "compliance_status": "review_required",
         "clauses_internal": [],
         "suggested_revision": "SYSTEM_UNAVAILABLE",
         "exact_policy_quote": None,
@@ -180,6 +211,7 @@ def _normalize_batch_result(
         "clause_title": clause_type,
         "policy_evidence_status": item.get("policy_evidence_status"),
     }
+    normalized["compliance_status"] = "compliant" if compliant else "non_compliant"
     return verify_compliance_result(normalized, docs)
 
 
@@ -208,6 +240,11 @@ def compliance_checker(state: SubState) -> dict:
         else getattr(clause_data, "clause_type", "Unknown")
     )
     org_id = state.get("org_id", get_default_org_id())
+    from core.tenant import get_tenant_config
+    tenant_cfg = get_tenant_config(org_id)
+    active_version = tenant_cfg.active_policy_version
+    tenant_settings = f"{tenant_cfg.silent_policy_behavior}:{tenant_cfg.favorable_deviation_behavior}"
+
     cache = get_cache()
     clause_embedding = state.get("clause_embedding")
 
@@ -216,7 +253,9 @@ def compliance_checker(state: SubState) -> dict:
         clause_text,
         org_id,
         clause_type=clause_type,
+        version=active_version,
         embedding=clause_embedding,
+        tenant_settings=tenant_settings,
     )
     if cached_verdict:
         cached_copy = dict(cached_verdict)
@@ -250,7 +289,7 @@ def compliance_checker(state: SubState) -> dict:
     item = {"clause": clause_data, "relevant_docs": docs}
     if not docs_str.strip():
         result = (
-            _no_policy_result(item)
+            _no_policy_result(item, org_id=org_id)
             if evidence_status in {"searched", "silence_verified"}
             else _retrieval_review_result(item)
         )
@@ -259,7 +298,9 @@ def compliance_checker(state: SubState) -> dict:
             clause_text,
             result,
             clause_type=clause_type,
+            version=active_version,
             embedding=clause_embedding,
+            tenant_settings=tenant_settings,
         )
         return {"answer": [result]}
 
@@ -297,13 +338,16 @@ Internal Policy (retrieved):
     compliance_result["clause_title"] = clause_type
     compliance_result["clause_text"] = clause_text
 
+    compliance_result["compliance_status"] = "compliant" if compliance_result.get("compliant") else "non_compliant"
     # Persist in Two-Tier Cache for future requests
     cache.set_verdict(
         org_id,
         clause_text,
         compliance_result,
         clause_type=clause_type,
+        version=active_version,
         embedding=clause_embedding,
+        tenant_settings=tenant_settings,
     )
 
     return {"answer": [compliance_result]}
@@ -331,6 +375,10 @@ def evaluate_micro_batch(
         if clauses_with_docs
         else get_default_org_id()
     )
+    from core.tenant import get_tenant_config
+    tenant_cfg = get_tenant_config(org_id)
+    active_version = tenant_cfg.active_policy_version
+    tenant_settings = f"{tenant_cfg.silent_policy_behavior}:{tenant_cfg.favorable_deviation_behavior}"
     cache = get_cache()
 
     # Check cache for each item in the batch
@@ -343,7 +391,9 @@ def evaluate_micro_batch(
             c_text,
             org_id,
             clause_type=c_type,
+            version=active_version,
             embedding=item.get("clause_embedding"),
+            tenant_settings=tenant_settings,
         )
         if cached:
             cached_copy = dict(cached)
@@ -407,7 +457,7 @@ Retrieved Policy Evidence:
             c_text, c_type, docs = _clause_fields(item)
             if not docs:
                 res_dict = (
-                    _no_policy_result(item)
+                    _no_policy_result(item, org_id=org_id)
                     if item.get("policy_evidence_status") in {
                         "searched",
                         "silence_verified",
@@ -425,7 +475,9 @@ Retrieved Policy Evidence:
                 c_text,
                 res_dict,
                 clause_type=c_type,
+                version=active_version,
                 embedding=item.get("clause_embedding"),
+                tenant_settings=tenant_settings,
             )
             cached_results[idx] = res_dict
         return [r for r in cached_results if r is not None]

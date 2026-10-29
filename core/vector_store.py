@@ -113,8 +113,8 @@ class VectorStoreBackend(ABC):
         """Backward-compatible dense search returning just chunks."""
 
     @abstractmethod
-    def get_parent(self, parent_id: str) -> Optional[Chunk]:
-        """Fetch a parent chunk by its id (cross-org — id is a global UUID)."""
+    def get_parent(self, parent_id: str, org_id: Optional[str] = None) -> Optional[Chunk]:
+        """Fetch a parent chunk by its id, scoped to org_id when provided."""
 
     @abstractmethod
     def clear_org(self, org_id: str) -> None:
@@ -366,12 +366,18 @@ class SQLiteVectorStore(VectorStoreBackend):
         hits = self.search_dense(org_id, query_embedding, top_k=top_k)
         return [c for _, c in hits]
 
-    def get_parent(self, parent_id: str) -> Optional[Chunk]:
-        """Fetch a parent chunk by id (org-agnostic — id is globally unique)."""
+    def get_parent(self, parent_id: str, org_id: Optional[str] = None) -> Optional[Chunk]:
+        """Fetch a parent chunk by id scoped to org_id when provided."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM chunks WHERE id = ?", (parent_id,)
-            ).fetchone()
+            if org_id:
+                row = conn.execute(
+                    "SELECT * FROM chunks WHERE id = ? AND org_id = ?",
+                    (parent_id, org_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM chunks WHERE id = ?", (parent_id,)
+                ).fetchone()
         return self._row_to_chunk(row) if row else None
 
     def clear_org(self, org_id: str) -> None:

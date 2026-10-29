@@ -22,7 +22,7 @@ The clause type and each retrieved policy section heading are supplied dynamical
 - CONCISENESS: Keep the `reason` and `suggested_revision` fields concise and to the point. Explain exactly what threshold was failed or met.
 - FAVORABLE DEVIATIONS: For a covered topic that benefits {company_name}, explain the benefit using the applicable policy text; do not describe the topic as silent.
 - PAYMENT EVIDENCE: For payment clauses, distinguish the payment deadline, early-payment discount, and late-payment penalty. Quote the relevant policy provisions for each point used in the decision. A longer payment deadline does not make an otherwise separate punitive or prohibited penalty compliant.
-- PAYMENT REASONING: When a longer payment deadline benefits {company_name}, describe it as: "The vendor payment period differs from the standard policy payment term but is treated as a favorable deviation under the configured evaluation rules." Do not call it a violation merely because it differs from the standard term.
+- PAYMENT REASONING: When a longer payment deadline benefits {company_name}, describe it as: "The [vendor payment period] differs from the standard [policy payment term] but is treated as a favorable deviation under the configured evaluation rules." Do not call it a violation merely because it differs from the standard term.
 - PERSPECTIVE: Always write the `suggested_revision` from the perspective of what the final contract should say to protect {company_name}.
 
 Respond ONLY using the exact JSON schema provided.
@@ -49,7 +49,7 @@ Clause types and policy section headings are extracted dynamically from each doc
 - Provide verbatim `exact_policy_quote` strings from the evidence to back up your decision.
 - Do not mention benchmark labels, expected verdicts, edge-case descriptions, or test metadata in any reason.
 - PAYMENT EVIDENCE: For payment clauses, distinguish the payment deadline, early-payment discount, and late-payment penalty. Quote the relevant policy provisions for each point used in the decision. A longer payment deadline does not make an otherwise separate punitive or prohibited penalty compliant.
-- PAYMENT REASONING: When a longer payment deadline benefits {company_name}, describe it as: "The vendor payment period differs from the standard policy payment term but is treated as a favorable deviation under the configured evaluation rules." Do not call it a violation merely because it differs from the standard term.
+- PAYMENT REASONING: When a longer payment deadline benefits {company_name}, describe it as: "The [vendor payment period] differs from the standard [policy payment term] but is treated as a favorable deviation under the configured evaluation rules." Do not call it a violation merely because it differs from the standard term.
 - If the evidence does not contain the information needed for a comparison (for example, an applicable SOW fee), do not invent a value or claim that the policy threshold was verified. State that manual review is required.
 
 Return the full list of results matching the input clauses using the strict JSON schema provided.

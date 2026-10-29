@@ -32,7 +32,7 @@ from pipeline.nodes.document_parser import parse_policy_pdf
 
 
 def policy_topic_matches(clause_type: str, heading: str, text: str) -> bool:
-    """Check topic overlap without assuming a fixed policy taxonomy."""
+    """Check topic overlap with Unicode and multi-language support without assuming fixed taxonomy."""
     ignored = {
         "a", "an", "and", "clause", "contract", "for", "in", "of", "on",
         "policy", "provision", "section", "term", "terms", "the", "to",
@@ -41,13 +41,32 @@ def policy_topic_matches(clause_type: str, heading: str, text: str) -> bool:
     def tokens(value: str) -> set[str]:
         return {
             token
-            for token in re.findall(r"\b[a-z]{3,}\b", value.lower())
+            for token in re.findall(r"\b\w{2,}\b", value.lower(), re.UNICODE)
             if token not in ignored
         }
 
     clause_terms = tokens(clause_type)
     searchable = tokens(f"{heading} {text}")
-    return bool(clause_terms and clause_terms.intersection(searchable))
+    if clause_terms and clause_terms.intersection(searchable):
+        return True
+
+    domain_synonyms: list[tuple[set[str], set[str]]] = [
+        ({"insurance", "coverage"}, {"insurance", "coverage", "insured", "liability policy"}),
+        ({"indemnification", "indemnity", "hold harmless", "defense"}, {"indemnif", "hold harmless", "defend"}),
+        ({"payment", "invoicing", "billing", "fees"}, {"payment", "invoice", "net", "billing", "fees", "discounts"}),
+        ({"dispute", "arbitration", "governing law", "jurisdiction"}, {"dispute", "arbitration", "litigation", "governing law", "jurisdiction"}),
+        ({"breach", "security incident", "cyber", "data incident"}, {"breach", "security incident", "incident", "compromise", "notification"}),
+        ({"confidentiality", "nda", "proprietary"}, {"confidential", "non-disclosure", "nda", "proprietary"}),
+        ({"audit", "inspection", "books and records"}, {"audit", "inspect", "records", "books"}),
+    ]
+    c_lower = clause_type.lower()
+    searchable_lower = f"{heading} {text}".lower()
+    for c_syns, p_syns in domain_synonyms:
+        if any(cs in c_lower for cs in c_syns):
+            if any(ps in searchable_lower for ps in p_syns):
+                return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +129,7 @@ def deduplicate_parents_max_pooling(
     scored_chunks: list[tuple[Chunk, float]],
     store: VectorStoreBackend,
     top_k: int = 5,
+    org_id: str | None = None,
 ) -> list[Document]:
     """
     Group matched child chunks by parent_id and max-pool their RRF scores.
@@ -148,7 +168,7 @@ def deduplicate_parents_max_pooling(
 
     docs: list[Document] = []
     for pid in sorted_parent_ids:
-        parent_chunk = store.get_parent(pid)
+        parent_chunk = store.get_parent(pid, org_id=org_id)
         if not parent_chunk:
             parent_chunk = fallback_chunk_map.get(pid)
 
@@ -218,11 +238,8 @@ def process_uploaded_files(
     store.replace_org_chunks(org_id, all_chunks)
 
     # Invalidate cache and bump policy version for this org
-    try:
-        from core.tenant import bump_tenant_policy_version
-        bump_tenant_policy_version(org_id)
-    except Exception:
-        pass
+    from core.tenant import bump_tenant_policy_version
+    bump_tenant_policy_version(org_id)
     from core.cache import get_cache
     get_cache().invalidate(org_id)
 
@@ -289,7 +306,7 @@ def batch_retrieve(
         scored_chunks = rrf_merge(
             dense_hits, sparse_hits, w_dense=w_dense, w_sparse=w_sparse, k=rrf_k
         )
-        parent_docs = deduplicate_parents_max_pooling(scored_chunks, store, top_k=top_k)
+        parent_docs = deduplicate_parents_max_pooling(scored_chunks, store, top_k=top_k, org_id=org_id)
         results.append(parent_docs)
 
     if return_embeddings:
@@ -343,7 +360,7 @@ def document_retriever(state: SubState) -> SubState:
     scored_chunks = rrf_merge(
         dense_hits, sparse_hits, w_dense=w_dense, w_sparse=w_sparse, k=rrf_k
     )
-    docs = deduplicate_parents_max_pooling(scored_chunks, store, top_k=top_k)
+    docs = deduplicate_parents_max_pooling(scored_chunks, store, top_k=top_k, org_id=org_id)
 
     policy_sections = store.get_policy_sections(org_id)
     clause_type = (

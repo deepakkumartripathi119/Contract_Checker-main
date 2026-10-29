@@ -79,6 +79,7 @@ class CacheBackend(ABC):
         version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
         threshold: float = 0.95,
+        tenant_settings: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Two-tier lookup: Tier-1 exact match, then Tier-2 semantic match with guards.
@@ -94,6 +95,7 @@ class CacheBackend(ABC):
         clause_type: str = "",
         version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
+        tenant_settings: Optional[str] = None,
     ) -> None:
         """Store verdict under exact key and persist embedding for semantic tier."""
 
@@ -112,12 +114,14 @@ class CacheBackend(ABC):
         org_id: str,
         clause_type: str = "",
         version: str = "",
+        tenant_settings: str = "",
     ) -> str:
-        """SHA256(org_id + ":" + normalize(clause_text) + ":" + clause_type + ":" + version)."""
+        """SHA256(org_id + ":" + normalize(clause_text) + ":" + clause_type + ":" + version + ":" + tenant_settings)."""
         norm = re.sub(r"\s+", " ", clause_text.strip().lower())
         c_type = (clause_type or "").strip().lower()
         ver = version or COMPLIANCE_EVALUATION_VERSION
-        payload = f"{org_id}:{norm}:{c_type}:{ver}".encode("utf-8")
+        settings_str = (tenant_settings or "").strip().lower()
+        payload = f"{org_id}:{norm}:{c_type}:{ver}:{settings_str}".encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
     @staticmethod
@@ -248,17 +252,34 @@ class SQLiteCache(CacheBackend):
         version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
         threshold: float = 0.95,
+        tenant_settings: Optional[str] = None,
     ) -> Optional[dict]:
         """
         Two-tier lookup:
-        1. Tier 1: SHA256 exact match on normalized clause text, org_id, clause_type, and version.
+        1. Tier 1: SHA256 exact match on normalized clause text, org_id, clause_type, version, and tenant_settings.
         2. Tier 2: Semantic cosine match with numeric-value and negation guards.
         """
         if not clause_text or not clause_text.strip():
             return None
 
+        if tenant_settings is None:
+            try:
+                from core.tenant import get_tenant_config
+                cfg = get_tenant_config(org_id)
+                tenant_settings = f"{cfg.silent_policy_behavior}:{cfg.favorable_deviation_behavior}"
+                if version is None:
+                    version = cfg.active_policy_version
+            except Exception:
+                tenant_settings = ""
+
         ver = version or COMPLIANCE_EVALUATION_VERSION
-        key = self.make_key(clause_text, org_id, clause_type=clause_type, version=ver)
+        key = self.make_key(
+            clause_text,
+            org_id,
+            clause_type=clause_type,
+            version=ver,
+            tenant_settings=tenant_settings or "",
+        )
 
         # --- Tier 1: Exact Match (<1ms) ---
         with self._connect() as conn:
@@ -342,13 +363,30 @@ class SQLiteCache(CacheBackend):
         clause_type: str = "",
         version: Optional[str] = None,
         embedding: Optional[list[float]] = None,
+        tenant_settings: Optional[str] = None,
     ) -> None:
         """Store verdict with both exact key and optional embedding for semantic tier."""
         if not clause_text or not clause_text.strip():
             return
 
+        if tenant_settings is None:
+            try:
+                from core.tenant import get_tenant_config
+                cfg = get_tenant_config(org_id)
+                tenant_settings = f"{cfg.silent_policy_behavior}:{cfg.favorable_deviation_behavior}"
+                if version is None:
+                    version = cfg.active_policy_version
+            except Exception:
+                tenant_settings = ""
+
         ver = version or COMPLIANCE_EVALUATION_VERSION
-        key = self.make_key(clause_text, org_id, clause_type=clause_type, version=ver)
+        key = self.make_key(
+            clause_text,
+            org_id,
+            clause_type=clause_type,
+            version=ver,
+            tenant_settings=tenant_settings or "",
+        )
         blob = self._embed_to_blob(embedding) if embedding else None
 
         with self._connect() as conn:

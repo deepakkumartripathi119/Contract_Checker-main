@@ -70,6 +70,10 @@ class ClauseComplianceResult(BaseModel):
         default=False,
         description="Whether this result represents an omitted mandatory policy clause.",
     )
+    compliance_status: Optional[str] = Field(
+        default=None,
+        description="Ternary compliance status: compliant, non_compliant, or review_required.",
+    )
 
 
 class MicroBatchComplianceResult(BaseModel):
@@ -88,6 +92,7 @@ class MicroBatchLLMItem(BaseModel):
     compliant: Optional[bool] = None
     suggested_revision: Optional[str] = None
     exact_policy_quote: Optional[str] = None
+    compliance_status: Optional[str] = None
 
 
 class MicroBatchLLMResult(BaseModel):

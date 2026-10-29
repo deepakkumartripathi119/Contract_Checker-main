@@ -62,7 +62,7 @@ python tests/evaluate.py
 |---|---|---|---|---|---|---|---|
 | **Config A: Dense Only** | 48.15% | 62.96% | 0.543 | 91.89% | N/A | 0.16ms | 0% (Baseline) |
 | **Config B: BM25 Sparse Only** | 55.56% | 66.67% | 0.605 | 91.89% | N/A | 0.20ms | 0% (No embeddings) |
-| **Config C: Naive Fixed Hybrid** | 44.44% | 70.37% | 0.556 | 91.89% | 73.3% | 0.46ms | 15% |
+| **Config C: Naive Fixed Hybrid** | 44.44% | 70.37% | 0.556 | 91.89% | 44.4% | 0.36ms | 0.0% |
 | **Config D: Full Modern Pipeline** | **44.44%** | **66.67%** | **0.537** | **91.89%** | **100.0%** | **0.65ms** | **48.1% (Batched + Gate + Cache)** |
 
 ---
