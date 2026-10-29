@@ -158,16 +158,11 @@ def process_uploaded_files(
 ) -> list[str]:
     """
     Ingest a list of uploaded policy PDF files for an organisation.
-
-    1. Parse each PDF with document_parser → list[Chunk] (parent + child tree)
-    2. Collect all child chunks across all files
-    3. Embed all child chunks in ONE batch call
-    4. Persist all chunks to the vector store
     """
     org_id = org_id or get_config("POLICY_ORG_ID", "nexify")
     store = get_vector_store()
     
-    # WIPE ghost data before ingesting new policies to prevent duplicates
+    # WIPE ghost data before ingesting new policies to prevent missing-clause hallucinations
     store.clear_org(org_id)
 
     embedding_model = get_embedding_model()

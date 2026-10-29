@@ -115,10 +115,9 @@ else:
                     if not used_llm_fallback:
                         state = {"extracted_clauses": clauses_raw}
                     else:
-                        state = {"contract": [c["text"] for c in clauses_raw]}
+                        state = {"contract": [clauses_raw[0]["text"]]}
 
-                    # max_concurrency: caps parallel SubGraph runs to avoid
-                    # provider rate-limit errors when checking many clauses
+                    # max_concurrency: caps parallel SubGraph runs to avoid rate limits
                     response = app.invoke(state, config={"max_concurrency": 5})
                     data = response["answer"]
 
