@@ -42,7 +42,8 @@ with st.sidebar:
     st.header("Retrievers")
     if st.session_state.get("retrievers"):
         for retriever in st.session_state.retrievers:
-            st.write(f"- 🤖 {retriever.name}")
+            retriever_name = getattr(retriever, "name", str(retriever))
+            st.write(f"- 🤖 {retriever_name}")
     else:
         st.write("No retrievers created yet.")
 
@@ -110,49 +111,94 @@ else:
                 if not clauses_raw:
                     st.error("Could not extract any content from the uploaded PDF.")
                 else:
-                    # Build contract_text_chunks list expected by extract_clause node
-                    contract_text_chunks = [c["text"] for c in clauses_raw]
-                    state = {"contract": contract_text_chunks}
+                    # Bypass LLM extraction if we successfully parsed structure
+                    if not used_llm_fallback:
+                        state = {"extracted_clauses": clauses_raw}
+                    else:
+                        state = {"contract": [c["text"] for c in clauses_raw]}
 
                     # max_concurrency: caps parallel SubGraph runs to avoid
                     # provider rate-limit errors when checking many clauses
                     response = app.invoke(state, config={"max_concurrency": 5})
                     data = response["answer"]
 
+                    clause_groups = []
+                    if not used_llm_fallback:
+                        current_parent = None
+                        for clause in clauses_raw:
+                            metadata = clause.get("metadata", {})
+                            if metadata.get("depth", 1) == 1:
+                                current_parent = {
+                                    "clause_type": clause["clause_type"],
+                                    "page": str(metadata.get("page", "?")),
+                                    "children": [],
+                                }
+                                clause_groups.append(current_parent)
+                            elif current_parent is not None:
+                                current_parent["children"].append(clause)
+
+                    child_clause_count = sum(
+                        len(group["children"]) for group in clause_groups
+                    )
+
                     st.subheader("Clauses Extracted from Contract")
-                    num_clauses = len(response["extracted_clauses"])
+                    num_clauses = (
+                        child_clause_count
+                        if not used_llm_fallback
+                        else len(response["extracted_clauses"])
+                    )
                     st.write("Number of extracted clauses:", num_clauses)
                     st.info(f"✅ Checking ALL {num_clauses} clauses (no random sampling).")
 
-                    for idx, clause in enumerate(response["extracted_clauses"], 1):
-                        st.markdown(f"### {idx}. {clause['clause_type']}")
-                        st.markdown(f"> ***{clause['text']}***")
-                        st.markdown("---")
+                    if not used_llm_fallback:
+                        for idx, group in enumerate(clause_groups, 1):
+                            st.markdown(
+                                f"### {idx}. {group['clause_type']} (Pages: {group['page']})"
+                            )
+                            for child in group["children"]:
+                                st.markdown(f"> ***{child['text']}***")
+                            st.markdown("---")
+                    else:
+                        for idx, clause in enumerate(
+                            response["extracted_clauses"], 1
+                        ):
+                            st.markdown(f"### {idx}. {clause['clause_type']}")
+                            st.markdown(f"> ***{clause['text']}***")
+                            st.markdown("---")
 
                     st.subheader("Clause Compliance Results")
-                    for idx, clause in enumerate(data, 1):
-                        compliant_icon = "✅" if clause["compliant"] else "❌"
+
+                    def render_compliance_result(clause, heading=None):
+                        if heading:
+                            st.markdown(heading)
+
                         if clause.get("is_missing_clause"):
-                            st.error(f"### {idx}. {clause['clause_title']}")
-                            st.markdown(f"**Status:** 🚨 Omitted by Vendor (Non-compliant)")
+                            st.error("**Status:** 🚨 Omitted by Vendor (Non-compliant)")
                             st.markdown(f"**Risk Analysis:** {clause['reason']}")
                         else:
-                            st.markdown(f"### {idx}. {compliant_icon} {clause['clause_title']}")
                             st.markdown(
                                 f"**Extracted Clause (from Input):** {clause['clause_text']}"
                             )
                             st.markdown(f"**Reason:** {clause['reason']}")
 
                         if clause.get("cached"):
-                            st.caption(f"⚡ Served from cache ({clause.get('cache_tier', 'exact')})")
+                            st.caption(
+                                f"⚡ Served from cache ({clause.get('cache_tier', 'exact')})"
+                            )
 
                         if clause.get("exact_policy_quote"):
                             if clause.get("citation_verified") is True:
-                                st.markdown(f"**Verified Policy Quote:** ✅ *\"{clause['exact_policy_quote']}\"*")
+                                st.markdown(
+                                    f"**Verified Policy Quote:** ✅ *\"{clause['exact_policy_quote']}\"*"
+                                )
                             elif clause.get("citation_verified") is False:
-                                st.markdown(f"**Policy Quote:** ⚠️ *\"{clause['exact_policy_quote']}\" (unverified)*")
+                                st.markdown(
+                                    f"**Policy Quote:** ⚠️ *\"{clause['exact_policy_quote']}\" (unverified)*"
+                                )
                             else:
-                                st.markdown(f"**Policy Quote:** *\"{clause['exact_policy_quote']}\"*")
+                                st.markdown(
+                                    f"**Policy Quote:** *\"{clause['exact_policy_quote']}\"*"
+                                )
 
                         if clause.get("suggested_revision"):
                             st.markdown(
@@ -165,6 +211,59 @@ else:
                                 st.markdown(f"> *{entry}*")
 
                         st.markdown("---")
+
+                    if not used_llm_fallback:
+                        result_queues = {}
+                        for result in data:
+                            if not result.get("is_missing_clause"):
+                                key = " ".join(
+                                    result.get("clause_text", "").lower().split()
+                                )
+                                result_queues.setdefault(key, []).append(result)
+
+                        result_index = 0
+                        for idx, group in enumerate(clause_groups, 1):
+                            st.markdown(
+                                f"### {idx}. {group['clause_type']} (Pages: {group['page']})"
+                            )
+                            for child in group["children"]:
+                                key = " ".join(child["text"].lower().split())
+                                matching_results = result_queues.get(key, [])
+                                if matching_results:
+                                    result = matching_results.pop(0)
+                                    compliant_icon = (
+                                        "✅" if result["compliant"] else "❌"
+                                    )
+                                    render_compliance_result(
+                                        result,
+                                        f"**{compliant_icon} {result['clause_title']}**",
+                                    )
+                                else:
+                                    st.warning(
+                                        "No compliance result was returned for "
+                                        f"{child['clause_type']}."
+                                    )
+                    else:
+                        for idx, clause in enumerate(data, 1):
+                            compliant_icon = "✅" if clause["compliant"] else "❌"
+                            heading = (
+                                f"### {idx}. {clause['clause_title']}"
+                                if clause.get("is_missing_clause")
+                                else f"### {idx}. {compliant_icon} {clause['clause_title']}"
+                            )
+                            render_compliance_result(clause, heading)
+
+                    missing_results = [
+                        clause for clause in data if clause.get("is_missing_clause")
+                    ]
+                    if not used_llm_fallback:
+                        for result_index, clause in enumerate(
+                            missing_results, child_clause_count + 1
+                        ):
+                            render_compliance_result(
+                                clause,
+                                f"### {result_index}. {clause['clause_title']}",
+                            )
         else:
             clause_text = st.text_area(
                 "Enter Clause Text", placeholder="Paste the clause text here..."
@@ -238,30 +337,52 @@ else:
                     full_text = clauses_raw[0]["text"] if clauses_raw else ""
                     if full_text.strip():
                         result = extract_clauses({"contract": full_text})
-                        all_extracted_clauses = result.get("extracted_clauses", [])
+                        all_extracted_clauses = [
+                            {**clause, "page_range": "?"}
+                            for clause in result.get("extracted_clauses", [])
+                        ]
                 else:
-                    # Heading-split path — each section is already a clause
-                    all_extracted_clauses = [
-                        {
-                            "clause_type": c["clause_type"],
-                            "text": c["text"],
-                            "page_range": str(c["metadata"].get("page", "?")),
-                        }
-                        for c in clauses_raw
-                    ]
+                    # Group nested sections under their top-level parent.
+                    all_extracted_clauses = []
+                    current_parent = None
+                    for clause in clauses_raw:
+                        metadata = clause.get("metadata", {})
+                        depth = metadata.get("depth", 1)
+
+                        if depth == 1:
+                            current_parent = {
+                                "clause_type": clause["clause_type"],
+                                "page_range": str(metadata.get("page", "?")),
+                                "children": [],
+                            }
+                            all_extracted_clauses.append(current_parent)
+                        elif current_parent is not None:
+                            current_parent["children"].append(
+                                {
+                                    "text": clause["text"],
+                                    "page_range": str(metadata.get("page", "?")),
+                                }
+                            )
 
                 if not all_extracted_clauses:
                     st.warning("⚠️ No clauses were extracted from the document.")
                 else:
                     st.success(
-                        f"✅ {len(all_extracted_clauses)} clauses extracted from {len(chunks)} chunk(s)."
+                        f"✅ {len(all_extracted_clauses)} parent clauses extracted."
                     )
 
                     for idx, clause in enumerate(all_extracted_clauses, 1):
                         st.markdown(
                             f"### {idx}. {clause.get('clause_type', 'Unknown')} (Pages: {clause['page_range']})"
                         )
-                        st.markdown(f"> ***{clause.get('text', 'No text found.')}***")
+                        children = clause.get("children", [])
+                        if children:
+                            for child in children:
+                                st.markdown(f"> ***{child['text']}***")
+                        else:
+                            st.markdown(
+                                f"> ***{clause.get('text', 'No text found.')}***"
+                            )
                         st.markdown("---")
 
             except Exception as e:

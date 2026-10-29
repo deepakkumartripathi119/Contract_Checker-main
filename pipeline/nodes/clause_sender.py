@@ -11,7 +11,9 @@ Phase 2 Modernization:
 
 from langgraph.types import Send
 from core.state import AgentState
-from pipeline.nodes.retriever import batch_retrieve
+from pipeline.nodes.retriever import batch_retrieve, document_retriever
+from pipeline.nodes.query_generator import generate_relevant_docs_node
+from pipeline.nodes.reranker import Reranker
 
 
 def ReRanker_Sender(state: AgentState) -> list:
@@ -28,23 +30,55 @@ def ReRanker_Sender(state: AgentState) -> list:
 
     # Run batch retrieval across all clauses in a single batch network call
     try:
-        batch_docs = batch_retrieve(clauses)
+        batch_docs, embeddings = batch_retrieve(clauses, return_embeddings=True)
     except Exception as e:
         print(f"[Warning] batch_retrieve failed: {e}. Falling back to per-clause retrieval.")
         batch_docs = [[] for _ in clauses]
+        embeddings = [[] for _ in clauses]
 
     sends = []
-    for clause, docs in zip(clauses, batch_docs):
+    proceed_batch = []
+    for clause, docs, embedding in zip(clauses, batch_docs, embeddings):
         clause_payload = (
             clause.model_dump() if hasattr(clause, "model_dump") else clause
         )
+        substate = {
+            "clause": clause_payload,
+            "retrived_docs": docs,
+            "clause_embedding": embedding,
+            "retry_count": 0,
+        }
+        
+        # 1. Initial Rerank
+        rerank_result = Reranker(substate)
+        substate.update(rerank_result)
+        
+        # 2. Zone 2 Retry Loop (Inline)
+        if substate.get("rerank_status") == "retry":
+            # Generate new query
+            query_update = generate_relevant_docs_node(substate)
+            substate.update(query_update)
+            # Clear old docs so retriever performs a fresh search
+            substate.pop("retrived_docs", None)
+            # Re-retrieve
+            docs_update = document_retriever(substate)
+            substate.update(docs_update)
+            # Rerank again
+            rerank_result = Reranker(substate)
+            substate.update(rerank_result)
+            
+        # 3. Route based on final status
+        if substate.get("rerank_status") == "proceed":
+            proceed_batch.append(substate)
+        elif substate.get("rerank_status") == "skip":
+            # Send skipped clauses to a passthrough node to append their verdict
+            sends.append(Send("SkipNode", substate))
+
+    for start in range(0, len(proceed_batch), 5):
         sends.append(
             Send(
-                "SubGraph",
-                {
-                    "clause": clause_payload,
-                    "retrived_docs": docs,
-                },
+                "BulkCompliance",
+                {"compliance_batch": proceed_batch[start:start + 5]},
             )
         )
     return sends

@@ -44,16 +44,22 @@ Contract:
         try:
             extracted = extract_clause_llm.invoke(prompt)
             output = {k: v for k, v in extracted.model_dump().items() if v is not None}
-            output["clauses"] = [
+            clauses = [
                 clause
                 for clause in output.get("clauses", [])
                 if clause.get("text", "").strip()
             ]
-            return {"extracted_clauses": output["clauses"]}
+            unique_clauses = []
+            seen_texts = set()
+            for clause in clauses:
+                normalized_text = " ".join(clause["text"].lower().split())
+                if normalized_text not in seen_texts:
+                    seen_texts.add(normalized_text)
+                    unique_clauses.append(clause)
+            return {"extracted_clauses": unique_clauses}
         except Exception as e:
             print(f"[Retry {attempt + 1}/5] Error extracting clauses: {e}")
             if attempt == 4:
                 raise RuntimeError(
                     "Failed to extract clauses after multiple retries."
                 ) from e
-

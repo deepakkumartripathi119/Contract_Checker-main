@@ -84,7 +84,7 @@ cp .env.example .env
 
 ```ini
 LLM_PROVIDER=groq
-LLM_MODEL=qwen/qwen3-32b
+LLM_MODEL=llama-3.1-8b-instant
 GROQ_API_KEY=your_groq_key_here
 COHERE_API_KEY=your_cohere_key_here
 

@@ -65,9 +65,10 @@ def compliance_checker(state: SubState) -> dict:
     )
     org_id = get_config("POLICY_ORG_ID", "nexify")
     cache = get_cache()
+    clause_embedding = state.get("clause_embedding")
 
     # 2. Two-Tier Cache Check (Tier 1 SHA256 & Tier 2 Semantic)
-    cached_verdict = cache.get_verdict(clause_text, org_id)
+    cached_verdict = cache.get_verdict(clause_text, org_id, embedding=clause_embedding)
     if cached_verdict:
         cached_verdict["clause_title"] = clause_type
         return {"answer": [cached_verdict]}
@@ -91,7 +92,7 @@ def compliance_checker(state: SubState) -> dict:
             "exact_policy_quote": None,
             "citation_verified": None,
         }
-        cache.set_verdict(org_id, clause_text, result)
+        cache.set_verdict(org_id, clause_text, result, embedding=clause_embedding)
         return {"answer": [result]}
 
     prompt = f"""You are a contract compliance assistant for Nexify Solutions.
@@ -152,7 +153,7 @@ Respond in the exact JSON schema provided. Keep reason and suggested_revision co
     compliance_result["clause_title"] = clause_type
 
     # Persist in Two-Tier Cache for future requests
-    cache.set_verdict(org_id, clause_text, compliance_result)
+    cache.set_verdict(org_id, clause_text, compliance_result, embedding=clause_embedding)
 
     return {"answer": [compliance_result]}
 
@@ -184,7 +185,9 @@ def evaluate_micro_batch(
     for i, item in enumerate(clauses_with_docs):
         c_data = item.get("clause", {})
         c_text = c_data.get("text", "") if isinstance(c_data, dict) else getattr(c_data, "text", "")
-        cached = cache.get_verdict(c_text, org_id)
+        cached = cache.get_verdict(
+            c_text, org_id, embedding=item.get("clause_embedding")
+        )
         if cached:
             c_type = c_data.get("clause_type", "Unknown") if isinstance(c_data, dict) else getattr(c_data, "clause_type", "Unknown")
             cached["clause_title"] = c_type
@@ -242,7 +245,10 @@ Return the full list of results matching the input clauses.
                 res_dict["clause_title"] = c_type
 
                 # Cache result
-                cache.set_verdict(org_id, c_text, res_dict)
+                cache.set_verdict(
+                    org_id, c_text, res_dict,
+                    embedding=item.get("clause_embedding"),
+                )
                 cached_results[idx] = res_dict
             return [r for r in cached_results if r is not None]
     except Exception as e:

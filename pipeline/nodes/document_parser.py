@@ -121,6 +121,27 @@ def _heading_depth(heading_str: str) -> int:
     return len(heading_str.split("."))
 
 
+def _line_heading_depth(heading_line: str) -> int:
+    """Return nesting depth from a complete numbered or Markdown heading line."""
+    num_match = re.match(r"^(\d+(?:\.\d+)*)[\.\)]?\s+(.+)$", heading_line)
+    if num_match:
+        return _heading_depth(num_match.group(1))
+    md_match = re.match(r"^(#{1,4})\s+(.+)$", heading_line)
+    if md_match:
+        embedded_num = re.match(
+            r"^\*{0,2}(\d+(?:\.\d+)*)[\.\)]?\s+", md_match.group(2)
+        )
+        if embedded_num:
+            return _heading_depth(embedded_num.group(1))
+        return _heading_depth(md_match.group(1))
+    return 0
+
+
+def _clean_heading_title(title: str) -> str:
+    """Remove common Markdown emphasis around extracted heading titles."""
+    return re.sub(r"[*_`]+", "", title).strip()
+
+
 def _make_breadcrumb(doc_name: str, section_stack: list[str], page: int) -> str:
     """
     Build a human-readable breadcrumb injected at the top of each chunk.
@@ -164,9 +185,6 @@ def _split_by_headings(markdown: str, doc_name: str) -> list[_RawSection]:
 
     for i, match in enumerate(heading_matches):
         start = match.start()
-        end = heading_matches[i + 1].start() if i + 1 < len(heading_matches) else len(markdown)
-
-        section_text = markdown[start:end].strip()
         heading_line = match.group(0)
 
         # Parse heading number and title
@@ -178,13 +196,32 @@ def _split_by_headings(markdown: str, doc_name: str) -> list[_RawSection]:
             title = num_match.group(2).strip()
         elif md_match:
             heading_num = md_match.group(1)   # e.g. "##"
-            title = md_match.group(2).strip()
+            title = _clean_heading_title(md_match.group(2))
+            numbered_title = re.match(
+                r"^(\d+(?:\.\d+)*)[\.\)]?\s+(.+)$", title
+            )
+            if numbered_title:
+                heading_num = numbered_title.group(1)
+                title = numbered_title.group(2).strip()
         else:
             heading_num = str(i)
             title = heading_line.strip()
 
-        page = _detect_page(markdown[:start])
         depth = _heading_depth(heading_num)
+        if depth == 1:
+            end = next(
+                (
+                    candidate.start()
+                    for candidate in heading_matches[i + 1:]
+                    if _line_heading_depth(candidate.group(0)) == 1
+                ),
+                len(markdown),
+            )
+        else:
+            end = heading_matches[i + 1].start() if i + 1 < len(heading_matches) else len(markdown)
+
+        section_text = markdown[start:end].strip()
+        page = _detect_page(markdown[:start])
 
         sections.append(_RawSection(
             heading_num=heading_num,
@@ -193,6 +230,17 @@ def _split_by_headings(markdown: str, doc_name: str) -> list[_RawSection]:
             page=page,
             depth=depth,
         ))
+
+    # A standalone first Markdown heading is commonly the document title,
+    # not a mandatory policy section. Numbered sections that follow it are
+    # promoted to their own top-level sections above.
+    if (
+        sections
+        and sections[0].heading_num.startswith("#")
+        and not re.match(r"^\d", sections[0].title)
+        and any(re.match(r"^\d", section.heading_num) for section in sections[1:])
+    ):
+        sections = sections[1:]
 
     return sections
 
@@ -264,10 +312,14 @@ def parse_policy_pdf(
     # depth 1 sections are top-level parents; deeper sections are children
     depth_to_parent_id: dict[int, str] = {}
 
+    section_stack: list[tuple[int, str]] = []
+
     for sec in sections:
+        section_stack = [item for item in section_stack if item[0] < sec.depth]
+        section_stack.append((sec.depth, f"{sec.heading_num}: {sec.title}"))
         breadcrumb = _make_breadcrumb(
             doc_name,
-            [f"{sec.heading_num}: {sec.title}"],
+            [title for _, title in section_stack],
             sec.page,
         )
 
@@ -396,4 +448,3 @@ def parse_vendor_contract(
         })
 
     return clauses, False
-

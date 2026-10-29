@@ -100,8 +100,16 @@ def verify_compliance_result(
       - Prepends "[CITATION UNVERIFIED]" warning to the reason field
     """
     quote = result.get("exact_policy_quote")
-    if not quote:
-        result["citation_verified"] = None
+    if not quote or not str(quote).strip():
+        if result.get("compliant") is False:
+            result["citation_verified"] = False
+            curr_reason = result.get("reason", "")
+            if "[CITATION UNVERIFIED - Missing Quote]" not in curr_reason:
+                result["reason"] = (
+                    f"[CITATION UNVERIFIED - Missing Quote] {curr_reason}"
+                )
+        else:
+            result["citation_verified"] = None
         return result
 
     is_verified, clean_quote = verify_citation(quote, documents)
@@ -114,4 +122,3 @@ def verify_compliance_result(
             result["reason"] = f"[CITATION UNVERIFIED] {curr_reason}"
 
     return result
-

@@ -60,19 +60,19 @@ contract_content = [
     "",
     "This Agreement is between Acme Corp ('Vendor') and Nexify Solutions.",
     "",
-    "1. Payment (Edge Case: Benefits Nexify -> Should be Compliant)",
+    "1. Payment",
     "Nexify Solutions agrees to pay all undisputed invoices within 90 days of receipt. Furthermore, Nexify Solutions is entitled to a 5% discount if payment is made within 15 days.",
     "",
-    "2. Insurance (Edge Case: Harms Nexify -> Should be Non-compliant)",
+    "2. Insurance",
     "Vendor shall maintain general liability insurance with a minimum coverage limit of $500,000 per occurrence during the term of this Agreement.",
     "",
-    "3. Governing Law and Dispute Resolution (Edge Case: Direct Conflict/Harms -> Non-compliant)",
+    "3. Governing Law and Dispute Resolution",
     "In the event of any dispute, the parties agree to resolve the matter exclusively through litigation in the state and federal courts located in Tokyo, Japan.",
     "",
-    "4. Publicity (Edge Case: No Policy Coverage -> Compliant by default)",
+    "4. Publicity",
     "Vendor may use Nexify Solutions' name and logo in its marketing materials and customer lists with prior written consent.",
     "",
-    "5. Indemnification (Edge Case: Exact Match -> Compliant)",
+    "5. Indemnification",
     "The Vendor agrees to indemnify and hold harmless Nexify Solutions from any third-party claims resulting from the Vendor's gross negligence or willful misconduct.",
 ]
 
@@ -84,4 +84,3 @@ if __name__ == "__main__":
     create_pdf(data_dir / "Nexify_Company_Policy.pdf", "Internal Policy Document", policy_content)
     create_pdf(data_dir / "Vendor_Contract_Sample.pdf", "Vendor Contract", contract_content)
     print(f"PDFs generated successfully in {data_dir}.")
-

@@ -111,6 +111,13 @@ def missing_clause_checker(state: AgentState) -> dict:
             lines = [l.strip() for l in sec.text.split("\n") if l.strip()]
             sec_title = lines[0][:40] if lines else "Mandatory Policy Requirement"
 
+        if sec_title.lower() in {
+            "internal policy document",
+            "company policy",
+            "policy document",
+        }:
+            continue
+
         covered = is_policy_section_covered(sec_title, sec.text, contract_clauses)
         if not covered:
             doc_name = sec.metadata.get("doc_name", "Company Policy")
@@ -136,4 +143,3 @@ def missing_clause_checker(state: AgentState) -> dict:
             missing_alerts.append(alert)
 
     return {"answer": missing_alerts}
-

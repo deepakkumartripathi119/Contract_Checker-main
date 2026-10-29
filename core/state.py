@@ -87,14 +87,16 @@ def _retrieved_docs_reducer(a: List[Document], b: List[Document]) -> List[Docume
 # LangGraph state TypedDicts
 # ---------------------------------------------------------------------------
 
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     contract: Annotated[List[str], add]
     extracted_clauses: Annotated[List[Clause], add]
     answer: Annotated[List[ClauseComplianceResult], add]
+    compliance_batch: list[dict]
 
 
 class SubState(TypedDict, total=False):
     clause: dict
+    clause_embedding: Optional[list[float]]
     query: str
     retrived_docs: Annotated[List[Document], _retrieved_docs_reducer]
     relevant_docs: Annotated[List[Document], _retrieved_docs_reducer]

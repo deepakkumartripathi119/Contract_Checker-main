@@ -41,7 +41,7 @@ def _make_skip_verdict(
         "clause_text": clause_text,
         "policy_source": "NO INTERNAL POLICY FOUND",
         "reason": (
-            f"Reranker confidence ({score:.2f}) is below applicability threshold ({threshold:.2f}). "
+            f"Reranker confidence ({score:.4f}) is below applicability threshold ({threshold:.4f}). "
             "No internal policy guidelines found for this clause type. "
             "Marked compliant by default."
         ),
@@ -107,7 +107,8 @@ def Reranker(state: SubState) -> dict:
     cohere_key = get_config("COHERE_API_KEY")
     reranked_items: list[dict] = []
 
-    if cohere_key and cohere_key != "your_cohere_key_here":
+    use_cohere = get_config("RERANKER_USE_COHERE", "false").lower() == "true"
+    if use_cohere and cohere_key and cohere_key != "your_cohere_key_here":
         try:
             from langchain_cohere import CohereRerank
             reranker = CohereRerank(
@@ -124,13 +125,23 @@ def Reranker(state: SubState) -> dict:
             print(f"[Warning] Cohere rerank error: {e}. Falling back to RRF scores.")
 
     # Fallback to RRF score if Cohere is not configured or failed
+    score_source = "cohere"
     if not reranked_items:
+        score_source = "rrf"
         for idx, doc in enumerate(docs):
-            score = float(doc.metadata.get("rrf_score", 0.5))
+            score = float(doc.metadata.get("rrf_score", 0.0))
             reranked_items.append({"index": idx, "score": score})
         reranked_items.sort(key=lambda x: x["score"], reverse=True)
 
     top_score = reranked_items[0]["score"] if reranked_items else 0.0
+    if score_source == "rrf":
+        # RRF scores are bounded by the smoothing constant, unlike Cohere's
+        # 0..1 relevance scores. Values above .02 are retained for legacy
+        # callers that supplied normalized synthetic scores.
+        if top_score <= 0.02:
+            skip_threshold, retry_threshold = 0.005, 0.012
+        else:
+            skip_threshold, retry_threshold = 0.15, 0.35
 
     # -----------------------------------------------------------------------
     # 3-Zone Gate Evaluation
@@ -160,6 +171,7 @@ def Reranker(state: SubState) -> dict:
     for item in reranked_items[:top_k]:
         doc = docs[item["index"]]
         doc.metadata["relevance_score"] = item["score"]
+        doc.metadata["relevance_score_source"] = score_source
         relevant_docs.append(doc)
 
     return {

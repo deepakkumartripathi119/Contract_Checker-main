@@ -29,12 +29,12 @@ def get_config(key: str, default: str | None = None) -> str | None:
 # ---------------------------------------------------------------------------
 # Provider config
 # ---------------------------------------------------------------------------
-LLM_PROVIDER: str = get_config("LLM_PROVIDER", "groq")
+LLM_PROVIDER: str = get_config("LLM_PROVIDER", "gemini")
 LLM_MODEL: str | None = get_config("LLM_MODEL")  # None → use provider default
 
 _PROVIDER_DEFAULTS: dict[str, str] = {
-    "groq": "qwen/qwen3-32b",
-    "gemini": "gemini-2.0-flash",
+    "groq": "llama-3.1-8b-instant",
+    "gemini": "gemini-3.5-flash-lite",
     "openai": "gpt-4o-mini",
 }
 

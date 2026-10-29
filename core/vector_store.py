@@ -243,7 +243,7 @@ class SQLiteVectorStore(VectorStoreBackend):
             return None, []
 
         chunks = [self._row_to_chunk(r) for r in rows]
-        tokenized_corpus = [self._tokenize(c.text) for c in chunks]
+        tokenized_corpus = [self._tokenize(f"{c.breadcrumb} {c.text}") for c in chunks]
         bm25 = BM25Okapi(tokenized_corpus)
 
         # Guard against zero/negative IDF on small corpora (e.g. <= 2 docs)

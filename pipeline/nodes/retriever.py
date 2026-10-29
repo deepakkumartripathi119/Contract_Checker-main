@@ -166,6 +166,10 @@ def process_uploaded_files(
     """
     org_id = org_id or get_config("POLICY_ORG_ID", "nexify")
     store = get_vector_store()
+    
+    # WIPE ghost data before ingesting new policies to prevent duplicates
+    store.clear_org(org_id)
+
     embedding_model = get_embedding_model()
 
     all_chunks: list[Chunk] = []
@@ -212,7 +216,8 @@ def batch_retrieve(
     clauses: list[dict | Clause],
     org_id: str | None = None,
     top_k: int | None = None,
-) -> list[list[Document]]:
+    return_embeddings: bool = False,
+) -> list[list[Document]] | tuple[list[list[Document]], list[list[float]]]:
     """
     Retrieve relevant policy documents for ALL clauses in ONE batched embedding call.
 
@@ -265,6 +270,8 @@ def batch_retrieve(
         parent_docs = deduplicate_parents_max_pooling(scored_chunks, store, top_k=top_k)
         results.append(parent_docs)
 
+    if return_embeddings:
+        return results, all_embeddings
     return results
 
 
