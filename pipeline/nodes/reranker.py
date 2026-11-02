@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from langchain.schema import Document
 from core.state import SubState
-from core.model import get_config
+from core.settings import get_config
 from pipeline.nodes.document_parser import clean_extracted_text
 
 
@@ -38,14 +38,14 @@ def _make_skip_verdict(
     org_id: str | None = None,
 ) -> dict:
     """Build a deterministic compliance verdict for irrelevant clauses (Zone 3)."""
-    behavior = "compliant"
+    behavior = "review_required"
     if org_id:
         try:
             from core.tenant import get_tenant_config
             cfg = get_tenant_config(org_id)
-            behavior = cfg.silent_policy_behavior
+            behavior = cfg.silent_policy_behavior or "review_required"
         except Exception:
-            behavior = "compliant"
+            behavior = "review_required"
 
     if behavior == "review_required":
         return {

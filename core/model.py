@@ -6,22 +6,10 @@ Switch providers by setting env vars:
     LLM_MODEL=<model-name>   (optional — falls back to provider default)
 
 No code changes needed anywhere else to swap models.
+Settings live in core.settings. This module only builds chat and embedding clients.
 """
 
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-
-def get_config(key: str, default: str | None = None) -> str | None:
-    """Read a configuration value from environment variables only."""
-    return os.getenv(key, default)
-
-
-def get_default_org_id() -> str:
-    """Return the configured organization, or a neutral local default."""
-    return get_config("POLICY_ORG_ID", "default") or "default"
+from core.settings import get_config, get_default_org_id
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +101,35 @@ from core.state import (  # noqa: E402
     MicroBatchLLMResult,
 )
 
-extract_clause_llm = get_llm(temperature=0.0).with_structured_output(ExtractedClauses)
-query_generator_llm = get_llm(temperature=0.3).with_structured_output(QuerySchema)
-compliance_model = get_llm(temperature=0.0).with_structured_output(ClauseComplianceResult)
-micro_batch_compliance_model = get_llm(temperature=0.0).with_structured_output(
-    MicroBatchLLMResult,
-    method="json_mode",
+class _LazyStructuredModel:
+    """Build one structured client on first use.
+
+    Importing the pipeline does not open a provider connection. Nodes still
+    call these objects by name, so tests can replace the object on the node.
+    """
+
+    def __init__(self, temperature: float, schema, method: str | None = None):
+        self._temperature = temperature
+        self._schema = schema
+        self._method = method
+        self._model = None
+
+    def _resolve(self):
+        if self._model is None:
+            llm = get_llm(temperature=self._temperature)
+            if self._method is None:
+                self._model = llm.with_structured_output(self._schema)
+            else:
+                self._model = llm.with_structured_output(self._schema, method=self._method)
+        return self._model
+
+    def __getattr__(self, name: str):
+        return getattr(self._resolve(), name)
+
+
+extract_clause_llm = _LazyStructuredModel(0.0, ExtractedClauses)
+query_generator_llm = _LazyStructuredModel(0.3, QuerySchema)
+compliance_model = _LazyStructuredModel(0.0, ClauseComplianceResult)
+micro_batch_compliance_model = _LazyStructuredModel(
+    0.0, MicroBatchLLMResult, method="json_mode"
 )

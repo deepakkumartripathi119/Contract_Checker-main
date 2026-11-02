@@ -5,7 +5,7 @@ Nothing in this file imports from pipeline/ — it is the lowest-level module
 and can be safely imported by any other package.
 """
 
-from typing import TypedDict, Annotated, List, Optional
+from typing import TypedDict, Annotated, List, Optional, Literal
 from operator import add
 from pydantic import BaseModel, Field
 from langchain.schema import Document
@@ -70,7 +70,9 @@ class ClauseComplianceResult(BaseModel):
         default=False,
         description="Whether this result represents an omitted mandatory policy clause.",
     )
-    compliance_status: Optional[str] = Field(
+    compliance_status: Optional[
+        Literal["compliant", "non_compliant", "review_required"]
+    ] = Field(
         default=None,
         description="Ternary compliance status: compliant, non_compliant, or review_required.",
     )

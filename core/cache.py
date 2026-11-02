@@ -3,9 +3,9 @@ core/cache.py — Provider-agnostic Two-Tier Cache abstraction.
 
 Architecture
 ------------
-CacheBackend (ABC)
-  └─ SQLiteCache   ← current default (CACHE_BACKEND=sqlite)
-  └─ RedisCache    ← future  (CACHE_BACKEND=redis)
+CacheBackend (ABC)          this file
+  └─ SQLiteCache              core.sqlite_cache
+  └─ RedisCache               core.redis_cache
 
 Two-Tier Cache Hierarchy
 ------------------------
@@ -15,7 +15,7 @@ Tier 1: SHA256 Exact-Match (<1ms, $0 LLM cost)
 
 Tier 2: Semantic Cosine Match (with Guardrails)
   - Compares cosine similarity of clause embeddings (threshold >= 0.95).
-  - Scoped to identical clause_type and active compliance rule version.
+  - Scoped to identical clause_type, policy version, and tenant-settings fingerprint.
   - CRITICAL GUARDS to prevent false semantic equivalence:
     1. Numeric Guard: Extracts all numbers (\b\d+(?:\.\d+)?\b). If numbers differ
        (e.g., "30 days" vs "90 days"), the match is REJECTED.
@@ -31,12 +31,9 @@ updates their policy documents.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
-import sqlite3
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -136,300 +133,81 @@ class CacheBackend(ABC):
         return tokens.intersection(_NEGATION_TOKENS)
 
 
-# ---------------------------------------------------------------------------
-# SQLite implementation
-# ---------------------------------------------------------------------------
+def pick_semantic_verdict(
+    clause_text: str,
+    embedding: list[float],
+    rows: list[tuple[str, object, dict]],
+    threshold: float,
+) -> Optional[dict]:
+    """Choose a near-duplicate verdict. The number and negation rules stay here.
 
-_CREATE_CACHE_TABLE = """
-CREATE TABLE IF NOT EXISTS compliance_cache (
-    cache_key     TEXT PRIMARY KEY,
-    org_id        TEXT NOT NULL,
-    clause_text   TEXT NOT NULL,
-    clause_type   TEXT NOT NULL DEFAULT '',
-    version       TEXT NOT NULL DEFAULT 'v1.0',
-    value         TEXT NOT NULL,
-    embedding     BLOB,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_cache_org ON compliance_cache(org_id);
-"""
-
-
-class SQLiteCache(CacheBackend):
+    rows are (stored clause text, embedding, verdict). Redis and SQLite both
+    call this. Neither database decides that "30 days" matches "90 days".
     """
-    SQLite-backed two-tier cache with exact SHA256 and semantic cosine matching.
+    query = np.array(embedding, dtype=np.float32)
+    query_numbers = CacheBackend.extract_numbers(clause_text)
+    query_negations = CacheBackend.extract_negations(clause_text)
+    candidates: list[tuple[float, str, dict]] = []
+    for stored_text, stored_embedding, verdict in rows:
+        vector = np.array(stored_embedding, dtype=np.float32)
+        denom = float(np.linalg.norm(query) * np.linalg.norm(vector))
+        similarity = 0.0 if denom == 0 else float(np.dot(query, vector) / denom)
+        if similarity >= threshold:
+            candidates.append((similarity, stored_text, verdict))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    for similarity, stored_text, verdict in candidates:
+        if query_numbers != CacheBackend.extract_numbers(stored_text):
+            continue
+        stored_negations = CacheBackend.extract_negations(stored_text)
+        if bool(query_negations) != bool(stored_negations) or query_negations != stored_negations:
+            continue
+        chosen = dict(verdict)
+        chosen["cached"] = True
+        chosen["cache_tier"] = "tier2_semantic"
+        chosen["cache_similarity"] = round(similarity, 4)
+        chosen["clause_text"] = clause_text
+        return chosen
+    return None
+
+
+def resolve_cache_scope(
+    org_id: str,
+    version: Optional[str],
+    tenant_settings: Optional[str],
+) -> tuple[str, str]:
+    """Fill the policy version and tenant fingerprint when the caller did not.
+
+    Every cache implementation uses this so a new database does not invent
+    its own fingerprint. A failed tenant lookup leaves the fingerprint empty
+    and falls back to the evaluation version, which is the previous behavior.
     """
+    if tenant_settings is None:
+        try:
+            from core.tenant import get_tenant_config
+            cfg = get_tenant_config(org_id)
+            tenant_settings = f"{cfg.silent_policy_behavior}:{cfg.favorable_deviation_behavior}"
+            if version is None:
+                version = cfg.active_policy_version
+        except Exception:
+            tenant_settings = ""
+    ver = version or COMPLIANCE_EVALUATION_VERSION
+    return ver, tenant_settings or ""
 
-    def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or os.getenv(
-            "SQLITE_DB_PATH",
-            str(Path(__file__).resolve().parents[1] / "data" / "contract_checker.db"),
-        )
-        if self.db_path != ":memory:":
-            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
-
-    def _connect(self) -> sqlite3.Connection:
-        if self.db_path == ":memory:":
-            if not hasattr(self, "_mem_conn") or self._mem_conn is None:
-                self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
-                self._mem_conn.row_factory = sqlite3.Row
-            return self._mem_conn
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(_CREATE_CACHE_TABLE)
-            # Automatic schema migration for existing databases
-            cursor = conn.execute("PRAGMA table_info(compliance_cache)")
-            columns = {row["name"] for row in cursor.fetchall()}
-            if "clause_text" not in columns:
-                conn.execute("ALTER TABLE compliance_cache ADD COLUMN clause_text TEXT NOT NULL DEFAULT ''")
-            if "embedding" not in columns:
-                conn.execute("ALTER TABLE compliance_cache ADD COLUMN embedding BLOB")
-            if "clause_type" not in columns:
-                conn.execute("ALTER TABLE compliance_cache ADD COLUMN clause_type TEXT NOT NULL DEFAULT ''")
-            if "version" not in columns:
-                conn.execute("ALTER TABLE compliance_cache ADD COLUMN version TEXT NOT NULL DEFAULT 'v1.0'")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_org_type_ver ON compliance_cache(org_id, clause_type, version);")
-
-    @staticmethod
-    def _embed_to_blob(embedding: list[float]) -> bytes:
-        return np.array(embedding, dtype=np.float32).tobytes()
-
-    @staticmethod
-    def _blob_to_embed(blob: bytes) -> np.ndarray:
-        return np.frombuffer(blob, dtype=np.float32)
-
-    @staticmethod
-    def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-        denom = np.linalg.norm(a) * np.linalg.norm(b)
-        if denom == 0:
-            return 0.0
-        return float(np.dot(a, b) / denom)
-
-    # ------------------------------------------------------------------
-    # CacheBackend interface
-    # ------------------------------------------------------------------
-
-    def get(self, key: str) -> Optional[dict]:
-        """Direct exact lookup by key."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM compliance_cache WHERE cache_key = ?", (key,)
-            ).fetchone()
-        if not row:
-            return None
-        return json.loads(row["value"])
-
-    def set(self, key: str, value: dict) -> None:
-        """Direct store under exact key."""
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO compliance_cache
-                  (cache_key, org_id, clause_text, clause_type, version, value, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    key,
-                    value.get("org_id", "default"),
-                    value.get("clause_text", ""),
-                    value.get("clause_type", ""),
-                    value.get("version", COMPLIANCE_EVALUATION_VERSION),
-                    json.dumps(value),
-                    None,
-                ),
-            )
-
-    def get_verdict(
-        self,
-        clause_text: str,
-        org_id: str,
-        clause_type: str = "",
-        version: Optional[str] = None,
-        embedding: Optional[list[float]] = None,
-        threshold: float = 0.95,
-        tenant_settings: Optional[str] = None,
-    ) -> Optional[dict]:
-        """
-        Two-tier lookup:
-        1. Tier 1: SHA256 exact match on normalized clause text, org_id, clause_type, version, and tenant_settings.
-        2. Tier 2: Semantic cosine match with numeric-value and negation guards.
-        """
-        if not clause_text or not clause_text.strip():
-            return None
-
-        if tenant_settings is None:
-            try:
-                from core.tenant import get_tenant_config
-                cfg = get_tenant_config(org_id)
-                tenant_settings = f"{cfg.silent_policy_behavior}:{cfg.favorable_deviation_behavior}"
-                if version is None:
-                    version = cfg.active_policy_version
-            except Exception:
-                tenant_settings = ""
-
-        ver = version or COMPLIANCE_EVALUATION_VERSION
-        key = self.make_key(
-            clause_text,
-            org_id,
-            clause_type=clause_type,
-            version=ver,
-            tenant_settings=tenant_settings or "",
-        )
-
-        # --- Tier 1: Exact Match (<1ms) ---
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT value, clause_text FROM compliance_cache WHERE cache_key = ?",
-                (key,),
-            ).fetchone()
-
-        if row:
-            res = json.loads(row["value"])
-            res["cached"] = True
-            res["cache_tier"] = "tier1_exact"
-            return res
-
-        # --- Tier 2: Semantic Match with Guardrails ---
-        if embedding is None:
-            return None
-
-        qvec = np.array(embedding, dtype=np.float32)
-        q_nums = self.extract_numbers(clause_text)
-        q_negs = self.extract_negations(clause_text)
-
-        params: list[str] = [org_id, ver]
-        clause_type_filter = ""
-        if clause_type:
-            clause_type_filter = "AND clause_type = ?"
-            params.append(clause_type)
-
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT cache_key, clause_text, value, embedding
-                FROM   compliance_cache
-                WHERE  org_id = ? AND version = ? {clause_type_filter} AND embedding IS NOT NULL
-                """,
-                params,
-            ).fetchall()
-
-        if not rows:
-            return None
-
-        candidates: list[tuple[float, str, dict]] = []
-        for r in rows:
-            vec = self._blob_to_embed(r["embedding"])
-            sim = self._cosine(qvec, vec)
-            if sim >= threshold:
-                candidates.append((sim, r["clause_text"], json.loads(r["value"])))
-
-        if not candidates:
-            return None
-
-        # Sort candidates descending by similarity
-        candidates.sort(key=lambda x: x[0], reverse=True)
-
-        for sim, cand_text, verdict in candidates:
-            # 1. Numeric Guard: If numbers differ (e.g. 30 vs 90 days), reject match
-            c_nums = self.extract_numbers(cand_text)
-            if q_nums != c_nums:
-                continue
-
-            # 2. Negation Guard: If negation polarity differs, reject match
-            c_negs = self.extract_negations(cand_text)
-            if bool(q_negs) != bool(c_negs) or q_negs != c_negs:
-                continue
-
-            # Match accepted!
-            verdict["cached"] = True
-            verdict["cache_tier"] = "tier2_semantic"
-            verdict["cache_similarity"] = round(sim, 4)
-            # Update clause_text to the query clause for report consistency
-            verdict["clause_text"] = clause_text
-            return verdict
-
-        return None
-
-    def set_verdict(
-        self,
-        org_id: str,
-        clause_text: str,
-        verdict: dict,
-        clause_type: str = "",
-        version: Optional[str] = None,
-        embedding: Optional[list[float]] = None,
-        tenant_settings: Optional[str] = None,
-    ) -> None:
-        """Store verdict with both exact key and optional embedding for semantic tier."""
-        if not clause_text or not clause_text.strip():
-            return
-
-        if tenant_settings is None:
-            try:
-                from core.tenant import get_tenant_config
-                cfg = get_tenant_config(org_id)
-                tenant_settings = f"{cfg.silent_policy_behavior}:{cfg.favorable_deviation_behavior}"
-                if version is None:
-                    version = cfg.active_policy_version
-            except Exception:
-                tenant_settings = ""
-
-        ver = version or COMPLIANCE_EVALUATION_VERSION
-        key = self.make_key(
-            clause_text,
-            org_id,
-            clause_type=clause_type,
-            version=ver,
-            tenant_settings=tenant_settings or "",
-        )
-        blob = self._embed_to_blob(embedding) if embedding else None
-
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO compliance_cache
-                  (cache_key, org_id, clause_text, clause_type, version, value, embedding)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    key,
-                    org_id,
-                    clause_text,
-                    clause_type,
-                    ver,
-                    json.dumps(verdict),
-                    blob,
-                ),
-            )
-
-    def invalidate(self, org_id: str) -> None:
-        """Evict all cached entries for an org (called on policy document re-upload)."""
-        with self._connect() as conn:
-            conn.execute("DELETE FROM compliance_cache WHERE org_id = ?", (org_id,))
-
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
 
 def get_cache() -> CacheBackend:
     """Return the configured cache backend (controlled by CACHE_BACKEND env var)."""
     backend = os.getenv("CACHE_BACKEND", "sqlite").lower()
 
     if backend == "sqlite":
-        db_path = os.getenv("SQLITE_DB_PATH")
+        from core.sqlite_cache import SQLiteCache
+        db_path = os.getenv("CACHE_DB_PATH") or os.getenv("SQLITE_DB_PATH")
         return SQLiteCache(db_path=db_path)
 
     if backend == "redis":
-        raise NotImplementedError(
-            "Redis cache backend is not yet implemented. Set CACHE_BACKEND=sqlite."
-        )
+        from core.redis_cache import RedisCache
+        return RedisCache(url=os.getenv("REDIS_URL"))
 
     raise ValueError(
         f"Unknown CACHE_BACKEND='{backend}'. Supported values: sqlite, redis"
     )
+

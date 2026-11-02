@@ -5,6 +5,8 @@ test.ipynb
 test1.ipynb
 contract.pdf
 data/contract_checker.db
+data/contract_checker.phase3.bak
+data/objects/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

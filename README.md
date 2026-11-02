@@ -58,6 +58,8 @@ python tests/evaluate.py
 
 *Note on Latency: Latencies below reflect in-memory local simulation using a 64-dimensional deterministic projection embedder for offline reproducibility. Live network API round trips (e.g. Cohere/Groq/Gemini) typically range from 250ms to 900ms depending on provider and network conditions.*
 
+These figures are an offline regression snapshot, not production compliance accuracy or measured API spend. Verdicts in the harness come from fixture-specific rules, not the live LLM. All four configurations currently report the same verdict F1. Config D's citation figure checks four fixed policy quotations, and its API reduction is estimated by the harness. On the saved retrieval numbers, the full pipeline does not beat BM25-only Recall@1 or MRR@3.
+
 | Configuration | Recall@1 | Recall@3 | MRR@3 | Verdict F1 | Citation Faith (%) | Measured Local Latency / Clause | API Call Reduction |
 |---|---|---|---|---|---|---|---|
 | **Config A: Dense Only** | 48.15% | 62.96% | 0.543 | 91.89% | N/A | 0.16ms | 0% (Baseline) |

@@ -1,21 +1,17 @@
 """
-core/tenant.py — Tenant configuration, identity, and isolation abstraction.
+core/tenant.py — Tenant configuration and identity.
 
-Provides explicit tenant configuration boundaries:
-- Stable tenant identifier and legal entity names/aliases
-- Active policy revision tracking for safe cache invalidation
-- Authorized evaluation rules (e.g., treatment of policy silence: review_required vs compliant)
-- Cross-tenant isolation guarantees
+This module owns the tenant rules: who the organization is, which policy
+revision is active, and how silence is treated. It does not know the SQL
+for SQLite or Postgres. Those live in core.tenant_repository.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import json
-import sqlite3
-from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -32,7 +28,7 @@ class TenantConfig(BaseModel):
         description="Active policy revision identifier, incremented on staged policy updates",
     )
     silent_policy_behavior: str = Field(
-        default_factory=lambda: os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "compliant"),
+        default_factory=lambda: os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "review_required"),
         description="Behavior when no internal policy addresses a contract topic: 'review_required' or 'compliant'",
     )
     favorable_deviation_behavior: str = Field(
@@ -42,6 +38,15 @@ class TenantConfig(BaseModel):
     supported_languages: List[str] = Field(
         default_factory=lambda: ["en"],
         description="List of verified supported languages for policy and contract processing",
+    )
+    login_name: Optional[str] = Field(
+        default=None,
+        description="Shared username for this company. One login for every employee.",
+    )
+    password_hash: Optional[str] = Field(default=None)
+    session_version: int = Field(
+        default=0,
+        description="Incremented on each login so the previous token stops working.",
     )
 
     def is_tenant_name(self, candidate: str) -> bool:
@@ -59,47 +64,16 @@ class TenantConfig(BaseModel):
         return False
 
 
-_TENANT_DB_TABLE = """
-CREATE TABLE IF NOT EXISTS tenant_configs (
-    org_id                       TEXT PRIMARY KEY,
-    name                         TEXT NOT NULL,
-    aliases                      TEXT NOT NULL DEFAULT '[]',
-    active_policy_version        TEXT NOT NULL DEFAULT 'v1.0',
-    silent_policy_behavior       TEXT NOT NULL DEFAULT 'compliant',
-    favorable_deviation_behavior TEXT NOT NULL DEFAULT 'allow_favorable',
-    supported_languages          TEXT NOT NULL DEFAULT '["en"]',
-    updated_at                   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-"""
-
 _IN_MEMORY_TENANTS: dict[str, TenantConfig] = {}
-_MEM_CONN: Optional[sqlite3.Connection] = None
 
 
-def _get_tenant_db_conn() -> sqlite3.Connection:
-    global _MEM_CONN
-    db_path = os.getenv(
-        "SQLITE_DB_PATH",
-        str(Path(__file__).resolve().parents[1] / "data" / "contract_checker.db"),
-    )
-    if db_path == ":memory:":
-        if _MEM_CONN is None:
-            _MEM_CONN = sqlite3.connect(":memory:", check_same_thread=False)
-            _MEM_CONN.row_factory = sqlite3.Row
-            with _MEM_CONN:
-                _MEM_CONN.executescript(_TENANT_DB_TABLE)
-        return _MEM_CONN
-
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    with conn:
-        conn.executescript(_TENANT_DB_TABLE)
-    return conn
+def _repository():
+    from core.tenant_repository import get_tenant_repository
+    return get_tenant_repository()
 
 
 def get_tenant_config(org_id: str) -> TenantConfig:
-    """Retrieve tenant configuration by org_id, falling back to neutral default."""
+    """Retrieve tenant configuration by org_id, falling back to a neutral default."""
     if not org_id:
         org_id = os.getenv("POLICY_ORG_ID", "default")
 
@@ -107,66 +81,40 @@ def get_tenant_config(org_id: str) -> TenantConfig:
         return _IN_MEMORY_TENANTS[org_id]
 
     try:
-        conn = _get_tenant_db_conn()
-        with conn:
-            row = conn.execute(
-                "SELECT * FROM tenant_configs WHERE org_id = ?", (org_id,)
-            ).fetchone()
-        if row:
-            config = TenantConfig(
-                org_id=row["org_id"],
-                name=row["name"],
-                aliases=json.loads(row["aliases"]),
-                active_policy_version=row["active_policy_version"],
-                silent_policy_behavior=row["silent_policy_behavior"],
-                favorable_deviation_behavior=row["favorable_deviation_behavior"],
-                supported_languages=json.loads(row["supported_languages"]),
-            )
+        config = _repository().get(org_id)
+        if config:
             _IN_MEMORY_TENANTS[org_id] = config
             return config
     except Exception as exc:
         print(f"[Warning] Error reading tenant configuration for '{org_id}': {exc}")
 
-    # Default tenant config
+    # Missing or unreadable configuration is not evidence of compliance.
+    # Do not persist this fallback over a saved tenant preference.
     default_cfg = TenantConfig(
         org_id=org_id,
         name=org_id.capitalize() if org_id not in ("default", "") else "Organization",
         aliases=[],
         active_policy_version="v1.0",
-        silent_policy_behavior=os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "compliant"),
+        silent_policy_behavior=os.getenv("DEFAULT_SILENT_POLICY_BEHAVIOR", "review_required"),
     )
     _IN_MEMORY_TENANTS[org_id] = default_cfg
     return default_cfg
 
 
+def find_tenant_by_login(login_name: str) -> Optional[TenantConfig]:
+    """Read the company for a username from the database, not the memory copy."""
+    return _repository().find_by_login(login_name)
+
+
 def save_tenant_config(config: TenantConfig) -> None:
     """Save or update tenant configuration. Fails visibly if persistence fails."""
     try:
-        conn = _get_tenant_db_conn()
-        with conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO tenant_configs (
-                    org_id, name, aliases, active_policy_version,
-                    silent_policy_behavior, favorable_deviation_behavior,
-                    supported_languages, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                """,
-                (
-                    config.org_id,
-                    config.name,
-                    json.dumps(config.aliases),
-                    config.active_policy_version,
-                    config.silent_policy_behavior,
-                    config.favorable_deviation_behavior,
-                    json.dumps(config.supported_languages),
-                ),
-            )
-        _IN_MEMORY_TENANTS[config.org_id] = config
+        _repository().save(config)
     except Exception as e:
         raise RuntimeError(
             f"Failed to persist tenant configuration for '{config.org_id}': {e}"
         ) from e
+    _IN_MEMORY_TENANTS[config.org_id] = config
 
 
 def bump_tenant_policy_version(org_id: str) -> str:

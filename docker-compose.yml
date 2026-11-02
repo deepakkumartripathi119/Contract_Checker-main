@@ -1,0 +1,109 @@
+# The shareable stack is Postgres and the app image.
+# pgAdmin is local only: docker compose --profile dev up -d
+
+# Shared by Streamlit, every API copy, and every worker.
+# API_REPLICAS and WORKER_REPLICAS set how many copies start.
+# The edge looks up the name api, so copy 3 needs no nginx edit.
+x-checker: &checker
+  image: contract-checker-app:latest
+  build: .
+  env_file:
+    - .env
+  environment:
+    VECTOR_STORE_BACKEND: pgvector
+    DATABASE_URL: postgresql+psycopg://contract:contract@postgres:5432/contract_checker
+    CACHE_BACKEND: redis
+    REDIS_URL: redis://redis:6379/0
+    OBJECT_STORE_BACKEND: local
+    OBJECT_STORE_PATH: /data/objects
+    USE_LLM_OBLIGATION_CHECK: "true"
+  volumes:
+    - contract_checker_cache:/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16
+    environment:
+      POSTGRES_USER: contract
+      POSTGRES_PASSWORD: contract
+      POSTGRES_DB: contract_checker
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - contract_checker_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contract -d contract_checker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  streamlit:
+    <<: *checker
+    ports:
+      - "8501:8501"
+
+  api:
+    <<: *checker
+    command: ["python", "-m", "uvicorn", "services.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  worker:
+    <<: *checker
+    command: ["python", "-m", "scripts.worker"]
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    healthcheck:
+      disable: true
+
+  edge:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      API_UPSTREAM: api:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+  pgadmin:
+    profiles: ["dev"]
+    image: dpage/pgadmin4:8.14
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "127.0.0.1:5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  contract_checker_pg:
+  contract_checker_cache:

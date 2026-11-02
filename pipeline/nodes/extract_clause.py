@@ -1,7 +1,8 @@
 """LangGraph node for fallback open-ended contract clause extraction."""
 
 from core.state import AgentState
-from core.model import extract_clause_llm, get_default_org_id
+from core.model import extract_clause_llm
+from core.settings import get_default_org_id
 from core.vector_store import get_vector_store
 from prompts.clause_extraction import CLAUSE_EXTRACTION_SYSTEM_PROMPT
 

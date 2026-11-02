@@ -50,7 +50,7 @@ from typing import Optional
 from langsmith import traceable
 
 from core.vector_store import Chunk
-from core.model import get_default_org_id
+from core.settings import get_default_org_id
 
 
 # ---------------------------------------------------------------------------

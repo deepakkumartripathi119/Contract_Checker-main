@@ -6,7 +6,7 @@ load_dotenv()
 from pipeline.nodes.document_parser import parse_vendor_contract
 from pipeline.nodes.extract_clause import extract_clauses
 from pipeline.nodes.retriever import process_uploaded_files
-from core.model import get_default_org_id
+from core.settings import get_default_org_id
 
 st.set_page_config(layout="wide")
 st.session_state.setdefault("submitted", False)
@@ -21,6 +21,15 @@ def _verdict_icon(result: dict) -> str:
     if status == "review_required":
         return "⚠️"
     return "✅" if result.get("compliant") else "❌"
+
+
+def _manual_status_label(result: dict) -> str:
+    status = result.get("compliance_status")
+    if status == "review_required":
+        return "⚠️ Review required"
+    if result.get("compliant"):
+        return "✅ Compliant"
+    return "❌ Non-compliant"
 
 
 def assemble_display_results(
@@ -224,7 +233,17 @@ else:
                             st.markdown(heading)
 
                         if clause.get("is_missing_clause"):
-                            st.error("**Status:** 🚨 Omitted by Vendor (Non-compliant)")
+                            status = clause.get("compliance_status")
+                            if status == "review_required":
+                                st.warning("**Status:** ⚠️ Review required")
+                            elif status == "contradicted":
+                                st.error("**Status:** ❌ Conflicts with the policy")
+                            elif status == "partially_covered":
+                                st.error("**Status:** ❌ Only partly covered")
+                            else:
+                                st.error(
+                                    "**Status:** 🚨 Omitted by Vendor (Non-compliant)"
+                                )
                             st.markdown(f"**Risk Analysis:** {clause['reason']}")
                         else:
                             st.markdown(
@@ -364,10 +383,7 @@ else:
                             ],
                             "Retrieved From": [d["policy_source"] for d in data],
                             "Compliance Logic": [d["reason"] for d in data],
-                            "Status": [
-                                "✅ Compliant" if d["compliant"] else "❌ Non-compliant"
-                                for d in data
-                            ],
+                            "Status": [_manual_status_label(d) for d in data],
                             "Suggested Revision": [
                                 (
                                     d["suggested_revision"]

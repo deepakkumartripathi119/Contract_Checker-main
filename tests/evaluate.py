@@ -33,8 +33,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.vector_store import Chunk, SQLiteVectorStore
-from core.cache import SQLiteCache
+from core.vector_store import Chunk
+from core.sqlite_vector_store import SQLiteVectorStore
+from core.sqlite_cache import SQLiteCache
 from core.citation_verifier import verify_citation
 from pipeline.nodes.retriever import rrf_merge, deduplicate_parents_max_pooling
 from tests.golden_dataset import GOLDEN_TEST_CASES, GoldenTestCase

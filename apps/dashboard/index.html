@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contract Checker</title>
+  <style>
+    body { font-family: Georgia, serif; margin: 2rem auto; max-width: 46rem; line-height: 1.45; color: #1c1c1c; }
+    h1 { font-size: 1.6rem; }
+    section { border-top: 1px solid #ccc; margin-top: 1.5rem; padding-top: 1rem; }
+    label { display: block; margin-top: 0.7rem; }
+    input { width: 100%; max-width: 28rem; padding: 0.35rem; }
+    button { margin-top: 0.8rem; margin-right: 0.4rem; }
+    .error { color: #8a1f1f; }
+    .hidden { display: none; }
+    article { border-bottom: 1px solid #eee; padding: 0.6rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Contract Checker</h1>
+  <p>This page talks only to the API. It does not open the database.</p>
+
+  <section id="signed-out">
+    <h2>Register</h2>
+    <form id="register-form">
+      <label>Company id <input name="org_id" required autocomplete="organization"></label>
+      <label>Company name <input name="name" autocomplete="organization"></label>
+      <label>Username <input name="login_name" required autocomplete="username"></label>
+      <label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+      <button type="submit">Register</button>
+    </form>
+    <h2>Login</h2>
+    <form id="login-form">
+      <label>Username <input name="login_name" required autocomplete="username"></label>
+      <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+      <button type="submit">Login</button>
+    </form>
+  </section>
+
+  <section id="signed-in" class="hidden">
+    <p>Signed in as <strong id="company-name"></strong>.</p>
+    <button id="logout" type="button">Log out</button>
+    <h2>Upload a company policy</h2>
+    <form id="policy-form">
+      <label>PDF <input name="files" type="file" accept="application/pdf,.pdf" required></label>
+      <button type="submit">Store policy</button>
+    </form>
+    <h2>Check a vendor contract</h2>
+    <form id="contract-form">
+      <label>PDF <input name="contract" type="file" accept="application/pdf,.pdf" required></label>
+      <button type="submit">Check contract</button>
+    </form>
+    <div id="report"></div>
+  </section>
+  <p id="message" class="error" role="status"></p>
+
+  <script>
+    const message = document.querySelector("#message");
+    const signedOut = document.querySelector("#signed-out");
+    const signedIn = document.querySelector("#signed-in");
+
+    function showError(error) {
+      message.textContent = error && error.message ? error.message : String(error || "");
+    }
+
+    function authHeader() {
+      return { Authorization: "Bearer " + sessionStorage.getItem("token") };
+    }
+
+    function showSession() {
+      const token = sessionStorage.getItem("token");
+      signedOut.classList.toggle("hidden", Boolean(token));
+      signedIn.classList.toggle("hidden", !token);
+      document.querySelector("#company-name").textContent = sessionStorage.getItem("org_id") || "";
+    }
+
+    async function readError(response) {
+      const body = await response.json().catch(() => ({}));
+      const detail = body.detail;
+      throw new Error(typeof detail === "string" ? detail : response.statusText);
+    }
+
+    async function saveSession(response) {
+      if (!response.ok) await readError(response);
+      const body = await response.json();
+      sessionStorage.setItem("token", body.token);
+      sessionStorage.setItem("org_id", body.org_id);
+      message.textContent = "";
+      showSession();
+    }
+
+    function finding(item) {
+      const block = document.createElement("article");
+      const title = document.createElement("h3");
+      title.textContent = item.clause_title || item.clause_type || "Clause";
+      const status = document.createElement("p");
+      status.textContent = "Status: " + (item.compliance_status || (item.compliant ? "compliant" : "non_compliant"));
+      const reason = document.createElement("p");
+      reason.textContent = item.reason || "";
+      block.append(title, status, reason);
+      if (item.exact_policy_quote) {
+        const quote = document.createElement("p");
+        quote.textContent = "Policy quote: " + item.exact_policy_quote;
+        block.append(quote);
+      }
+      return block;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function waitForJob(jobId) {
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        const response = await fetch("/v1/jobs/" + jobId, { headers: authHeader() });
+        if (!response.ok) await readError(response);
+        const job = await response.json();
+        if (job.status === "succeeded") return job;
+        if (job.status === "failed") throw new Error(job.error || "The job failed");
+        message.textContent = "Job " + jobId + " is " + job.status + ".";
+        await sleep(2000);
+      }
+      throw new Error("Job " + jobId + " is still running. Open this page again and ask for that job.");
+    }
+
+    function showReport(report) {
+      const root = document.querySelector("#report");
+      root.replaceChildren();
+      const present = document.createElement("h2");
+      present.textContent = "Clauses in the contract";
+      root.append(present);
+      (report.present_clauses || []).forEach((item) => root.append(finding(item)));
+      const missing = document.createElement("h2");
+      missing.textContent = "Missing from the contract";
+      root.append(missing);
+      (report.missing_clauses || []).forEach((item) => root.append(finding(item)));
+    }
+
+    document.querySelector("#register-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.target));
+      try {
+        await saveSession(await fetch("/v1/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        }));
+      } catch (error) { showError(error); }
+    });
+
+    document.querySelector("#login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.target));
+      try {
+        await saveSession(await fetch("/v1/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        }));
+      } catch (error) { showError(error); }
+    });
+
+    document.querySelector("#logout").addEventListener("click", () => {
+      sessionStorage.clear();
+      document.querySelector("#report").replaceChildren();
+      showSession();
+    });
+
+    document.querySelector("#policy-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const response = await fetch("/v1/policies", { method: "POST", headers: authHeader(), body: new FormData(event.target) });
+        if (!response.ok) await readError(response);
+        const body = await response.json();
+        const job = await waitForJob(body.job_id);
+        const indexed = (job.result && job.result.document_ids) || [];
+        message.textContent = "Policy indexed. " + indexed.join(", ");
+      } catch (error) { showError(error); }
+    });
+
+    document.querySelector("#contract-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      message.textContent = "Contract stored. Waiting for the worker.";
+      try {
+        const response = await fetch("/v1/checks", { method: "POST", headers: authHeader(), body: new FormData(event.target) });
+        if (!response.ok) await readError(response);
+        const accepted = await response.json();
+        const job = await waitForJob(accepted.job_id);
+        showReport(job.result || {});
+        message.textContent = "";
+      } catch (error) { showError(error); }
+    });
+
+    showSession();
+  </script>
+</body>
+</html>

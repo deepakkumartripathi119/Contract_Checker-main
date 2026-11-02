@@ -1,0 +1,38 @@
+map $http_authorization $rate_key {
+    ""      $binary_remote_addr;
+    default $http_authorization;
+}
+
+# One counter per caller. 60 requests per minute, plus a short burst.
+# This counts HTTP calls. It does not look inside the file or at model tokens.
+limit_req_zone $rate_key zone=http_calls:10m rate=60r/m;
+
+# Docker's DNS name api answers with every API copy. Adding a copy does not
+# add a line here. The short cache lets a new copy start receiving traffic.
+resolver 127.0.0.11 valid=5s ipv6=off;
+
+server {
+    listen 80;
+    client_max_body_size 25m;
+
+    location /health {
+        set $checker_api http://${API_UPSTREAM};
+        proxy_pass $checker_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        limit_req zone=http_calls burst=20 nodelay;
+        limit_req_status 429;
+        set $checker_api http://${API_UPSTREAM};
+        proxy_pass $checker_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}

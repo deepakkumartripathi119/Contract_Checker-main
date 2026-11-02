@@ -13,7 +13,7 @@ import hashlib
 from typing import Optional, List, Any
 from pydantic import BaseModel, Field
 
-from core.tenant import TenantConfig, get_tenant_config
+from core.tenant import TenantConfig
 
 
 class PolicyRequirement(BaseModel):
@@ -56,6 +56,9 @@ _INFORMATIONAL_TITLES = [
     r"^purpose$",
     r"^definitions$",
     r"^version history$",
+    r"^signatures?$",
+    r"^header$",
+    r"^footer$",
 ]
 
 _NORMATIVE_PATTERN = re.compile(
@@ -80,12 +83,16 @@ def normalize_tokens(text: str) -> set[str]:
 
 
 def is_informational_section(title: str, text: str) -> bool:
-    """Check if section is purely informational or structural without normative obligations."""
+    """Skip contents pages, signatures, and empty sections.
+
+    A missing word such as "shall" or "must" does not make a section informational.
+    Customers write obligations in many ways.
+    """
     clean_title = re.sub(r"^\d+(\.\d+)*\s*", "", title.strip().lower()).strip("*# ")
     for pat in _INFORMATIONAL_TITLES:
         if re.match(pat, clean_title):
             return True
-    return not bool(_NORMATIVE_PATTERN.search(f"{title} {text}"))
+    return not text.strip()
 
 
 def extract_policy_requirements(chunk: Any) -> list[PolicyRequirement]:
@@ -127,7 +134,7 @@ def extract_policy_requirements(chunk: Any) -> list[PolicyRequirement]:
     # Check for numbered sub-sections like 1.1, 1.2 or 4.1, 4.2
     sub_sections = re.findall(r"(?:^|\n)(?:\d+\.\d+|[A-Z]\.)\s+([^\n]+(?:\n(?!\d+\.\d+|[A-Z]\.)[^\n]+)*)", text)
     if len(sub_sections) > 1:
-        req_texts = [s.strip() for s in sub_sections if _NORMATIVE_PATTERN.search(s)]
+        req_texts = [s.strip() for s in sub_sections if s.strip()]
     else:
         req_texts = [text.strip()]
 
@@ -167,240 +174,219 @@ def extract_policy_requirements(chunk: Any) -> list[PolicyRequirement]:
     return requirements
 
 
+_DURATION_RE = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*(business\s+days?|hours?|days?|weeks?|months?)\b",
+    re.IGNORECASE,
+)
+_PROHIBITED_RE = re.compile(
+    r"\b(shall not|must not|may not|is prohibited|prohibited from)\b",
+    re.IGNORECASE,
+)
+_MANDATORY_RE = re.compile(
+    r"\b(shall|must|required|mandatory|agrees to)\b",
+    re.IGNORECASE,
+)
+_MAX_DURATION_RE = re.compile(
+    r"\b(within|no later than|not to exceed|not more than)\b",
+    re.IGNORECASE,
+)
+_MIN_DURATION_RE = re.compile(
+    r"\b(at least|minimum of|no less than|not less than)\b",
+    re.IGNORECASE,
+)
+_MIN_THRESHOLD_RE = re.compile(
+    r"\b(at least|minimum|no less than|not less than)\b",
+    re.IGNORECASE,
+)
+_MAX_THRESHOLD_RE = re.compile(
+    r"\b(at most|not to exceed|not more than|up to)\b",
+    re.IGNORECASE,
+)
+_LARGE_NUMBER_RE = re.compile(
+    r"\$\s*\d[\d,]*(?:\.\d+)?|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b"
+)
+
+
+def _clause_parts(clause: dict | Any) -> tuple[str, str]:
+    clause_type = (
+        clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")
+    ) or ""
+    clause_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
+    return clause_type, clause_text
+
+
+def _polarity(text: str) -> str:
+    if _PROHIBITED_RE.search(text):
+        return "prohibited"
+    if _MANDATORY_RE.search(text):
+        return "mandatory"
+    return "unspecified"
+
+
+def _durations_in_hours(text: str) -> list[float]:
+    durations: list[float] = []
+    for number, unit in _DURATION_RE.findall(text):
+        value = float(number)
+        normalized = unit.lower()
+        if "hour" in normalized:
+            durations.append(value)
+        elif "week" in normalized:
+            durations.append(value * 24 * 7)
+        elif "month" in normalized:
+            durations.append(value * 24 * 30)
+        elif "day" in normalized:
+            durations.append(value * 24)
+    return durations
+
+
+def _duration_relation(policy_text: str, contract_text: str) -> str:
+    """Compare the first stated duration without assuming a legal topic."""
+    policy_durations = _durations_in_hours(policy_text)
+    contract_durations = _durations_in_hours(contract_text)
+    if not policy_durations or not contract_durations:
+        return "unknown"
+    policy_value = policy_durations[0]
+    contract_value = contract_durations[0]
+    if abs(policy_value - contract_value) < 1e-6:
+        return "compatible"
+    policy_is_max = bool(_MAX_DURATION_RE.search(policy_text))
+    policy_is_min = bool(_MIN_DURATION_RE.search(policy_text))
+    if policy_is_max and not policy_is_min:
+        return "weaker" if contract_value > policy_value else "stricter"
+    if policy_is_min and not policy_is_max:
+        return "weaker" if contract_value < policy_value else "stricter"
+    return "unclear"
+
+
+def _large_numbers(text: str) -> list[float]:
+    values: list[float] = []
+    for raw in _LARGE_NUMBER_RE.findall(text):
+        values.append(float(raw.replace("$", "").replace(",", "").strip()))
+    return values
+
+
+def _numeric_threshold_relation(policy_text: str, contract_text: str) -> str:
+    """Compare explicit large numeric thresholds without using a topic list."""
+    policy_values = _large_numbers(policy_text)
+    contract_values = _large_numbers(contract_text)
+    if not policy_values or not contract_values:
+        return "unknown"
+    policy_value = max(policy_values)
+    contract_value = max(contract_values)
+    if _MIN_THRESHOLD_RE.search(policy_text) and contract_value < policy_value:
+        return "weaker"
+    if _MAX_THRESHOLD_RE.search(policy_text) and contract_value > policy_value:
+        return "weaker"
+    return "unknown"
+
+
 def assess_requirement_coverage(
     requirement: PolicyRequirement,
     contract_clauses: list[dict | Any],
     tenant_cfg: Optional[TenantConfig] = None,
 ) -> RequirementCoverageResult:
     """
-    Assess whether contract clauses satisfy, partially satisfy, or contradict a policy requirement.
-    Uses obligation-aware matching without brittle category hardcoding.
+    Compare one policy requirement with contract clauses.
+
+    The same structural checks apply to every topic: shared obligation language,
+    normative polarity, and explicit durations. A single shared token is not
+    enough to call a requirement fully covered. tenant_cfg is accepted so
+    callers can pass tenant context; this comparison does not override the
+    requirement text with tenant-specific legal categories.
     """
-    req_text = requirement.source_text.lower()
-    req_title = requirement.section_title.lower()
-    p_combined = f"{req_title} {req_text}"
-    req_tokens = normalize_tokens(p_combined)
+    del tenant_cfg
+    requirement_tokens = normalize_tokens(requirement.source_text)
+    if len(requirement_tokens) < 2:
+        requirement_tokens |= normalize_tokens(requirement.section_title)
 
-    # 1. Breach Notification obligation
-    is_breach_policy = bool(
-        re.search(r"\b(breach|security incident|data compromise|cyber incident)\b", p_combined)
-        and re.search(r"\b(notif\w*|inform\w*|report\w*|alert\w*)\b", p_combined)
-    )
-    if is_breach_policy:
-        for clause in contract_clauses:
-            c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-            c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-            c_combined = f"{c_type} {c_text}".lower()
-
-            has_breach_topic = bool(re.search(r"\b(breach|security incident|compromise|unauthorized access|incident)\b", c_combined))
-            has_notify_action = bool(re.search(r"\b(notif\w*|inform\w*|report\w*|alert\w*)\b", c_combined))
-
-            if not (has_breach_topic and has_notify_action):
-                continue
-
-            # Check deadline if policy has strict deadline
-            if re.search(r"\b(24\s*hours?|24-hour|24hr|within 24|one day|1 day)\b", p_combined):
-                # Weaker contract deadline fails strict policy
-                if (
-                    re.search(r"\b(14|15|30|45|60|90)\s*(business\s*)?days?\b", c_combined)
-                    or re.search(r"\b(2|3|4|5|7|10)\s*weeks?\b", c_combined)
-                    or re.search(r"\b(48|72)\s*hours?\b", c_combined)
-                ):
-                    return RequirementCoverageResult(
-                        requirement_id=requirement.requirement_id,
-                        coverage_status="partially_covered",
-                        matched_clause_type=c_type,
-                        matched_clause_text=c_text,
-                        explanation="Contract notification deadline exceeds policy requirement.",
-                    )
-
-                valid_deadline = bool(re.search(r"\b(24\s*hours?|one\s*day|1\s*day|twenty-four\s*hours?|promptly|immediately)\b", c_combined))
-                if not valid_deadline:
-                    days_match = re.search(r"\b(\d+)\s*(business\s*)?days?\b", c_combined)
-                    if days_match and int(days_match.group(1)) > 1:
-                        return RequirementCoverageResult(
-                            requirement_id=requirement.requirement_id,
-                            coverage_status="partially_covered",
-                            matched_clause_type=c_type,
-                            matched_clause_text=c_text,
-                            explanation="Contract notification deadline exceeds policy requirement.",
-                        )
-
-            return RequirementCoverageResult(
-                requirement_id=requirement.requirement_id,
-                coverage_status="fully_covered",
-                matched_clause_type=c_type,
-                matched_clause_text=c_text,
-                explanation="Breach notification obligation covered.",
-            )
-
-        return RequirementCoverageResult(
-            requirement_id=requirement.requirement_id,
-            coverage_status="not_covered",
-            explanation="No contract clause covers breach notification obligation.",
-        )
-
-    # 2. Audit Rights obligation
-    is_audit_policy = bool(
-        re.search(r"\baudit\b", p_combined)
-        and re.search(r"\b(right|inspect|access|examine|records|books|facilities)\b", p_combined)
-    )
-    if is_audit_policy:
-        for clause in contract_clauses:
-            c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-            c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-            c_combined = f"{c_type} {c_text}".lower()
-
-            is_only_reports = bool(
-                re.search(
-                    r"\b(provide audit report|provide annual audit|provide soc|furnish audit|deliver audit report)\b",
-                    c_combined,
-                )
-            )
-            has_audit_rights = bool(
-                re.search(
-                    r"\b(right to audit|may audit|entitled to audit|inspect books|examine records|inspect facilities|access to records|examine and audit|permit audit|audit vendor)\b",
-                    c_combined,
-                )
-            )
-            if is_only_reports and not has_audit_rights:
-                continue
-
-            if has_audit_rights or bool(re.search(r"\baudit\b", c_combined)):
-                return RequirementCoverageResult(
-                    requirement_id=requirement.requirement_id,
-                    coverage_status="fully_covered",
-                    matched_clause_type=c_type,
-                    matched_clause_text=c_text,
-                    explanation="Audit rights obligation covered.",
-                )
-
-        return RequirementCoverageResult(
-            requirement_id=requirement.requirement_id,
-            coverage_status="not_covered",
-            explanation="No contract clause grants required audit and inspection rights.",
-        )
-
-    # 3. Confidentiality / NDA
-    if re.search(r"\b(confidential\w*|non-disclosure|nda)\b", p_combined):
-        for clause in contract_clauses:
-            c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-            c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-            c_combined = f"{c_type} {c_text}".lower()
-            if re.search(r"\b(confidential\w*|non-disclosure|nda|proprietary information)\b", c_combined):
-                return RequirementCoverageResult(
-                    requirement_id=requirement.requirement_id,
-                    coverage_status="fully_covered",
-                    matched_clause_type=c_type,
-                    matched_clause_text=c_text,
-                    explanation="Confidentiality obligation covered.",
-                )
-        return RequirementCoverageResult(
-            requirement_id=requirement.requirement_id,
-            coverage_status="not_covered",
-            explanation="No contract clause covers confidentiality obligation.",
-        )
-
-    # 4. Dispute Resolution / Governing Law
-    if re.search(r"\b(dispute\w*|arbitration|litigation|governing law|jurisdiction|venue)\b", p_combined):
-        for clause in contract_clauses:
-            c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-            c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-            c_combined = f"{c_type} {c_text}".lower()
-            if re.search(r"\b(dispute\w*|arbitration|litigation|governing law|jurisdiction|venue|forum|courts?)\b", c_combined):
-                return RequirementCoverageResult(
-                    requirement_id=requirement.requirement_id,
-                    coverage_status="fully_covered",
-                    matched_clause_type=c_type,
-                    matched_clause_text=c_text,
-                    explanation="Dispute resolution / governing law obligation covered.",
-                )
-        return RequirementCoverageResult(
-            requirement_id=requirement.requirement_id,
-            coverage_status="not_covered",
-            explanation="No contract clause covers dispute resolution.",
-        )
-
-    # 5. Indemnification / Liability
-    if re.search(r"\b(indemnif\w*|hold harmless|defend\w*)\b", p_combined):
-        for clause in contract_clauses:
-            c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-            c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-            c_combined = f"{c_type} {c_text}".lower()
-            if re.search(r"\b(indemnif\w*|hold harmless|defend\w*)\b", c_combined):
-                return RequirementCoverageResult(
-                    requirement_id=requirement.requirement_id,
-                    coverage_status="fully_covered",
-                    matched_clause_type=c_type,
-                    matched_clause_text=c_text,
-                    explanation="Indemnification obligation covered.",
-                )
-        return RequirementCoverageResult(
-            requirement_id=requirement.requirement_id,
-            coverage_status="not_covered",
-            explanation="No contract clause covers indemnification.",
-        )
-
-    # 6. Payment / Invoicing
-    if re.search(r"\b(payment\w*|invoic\w*|net\s+\d+|billing)\b", p_combined):
-        for clause in contract_clauses:
-            c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-            c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-            c_combined = f"{c_type} {c_text}".lower()
-            if re.search(r"\b(payment\w*|invoic\w*|net\s+\d+|billing|fees?|pay\b)\b", c_combined):
-                return RequirementCoverageResult(
-                    requirement_id=requirement.requirement_id,
-                    coverage_status="fully_covered",
-                    matched_clause_type=c_type,
-                    matched_clause_text=c_text,
-                    explanation="Payment obligation covered.",
-                )
-        return RequirementCoverageResult(
-            requirement_id=requirement.requirement_id,
-            coverage_status="not_covered",
-            explanation="No contract clause covers payment terms.",
-        )
-
-    # 7. Insurance
-    if re.search(r"\b(insurance|liability coverage|policy limit)\b", p_combined):
-        for clause in contract_clauses:
-            c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-            c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-            c_combined = f"{c_type} {c_text}".lower()
-            if re.search(r"\b(insurance|coverage|policy limit)\b", c_combined):
-                return RequirementCoverageResult(
-                    requirement_id=requirement.requirement_id,
-                    coverage_status="fully_covered",
-                    matched_clause_type=c_type,
-                    matched_clause_text=c_text,
-                    explanation="Insurance obligation covered.",
-                )
-        return RequirementCoverageResult(
-            requirement_id=requirement.requirement_id,
-            coverage_status="not_covered",
-            explanation="No contract clause covers insurance requirements.",
-        )
-
-    # 8. General Open-Ended Obligation Matching (lexical token overlap)
-    title_tokens = normalize_tokens(requirement.section_title)
-    if not title_tokens:
-        title_tokens = normalize_tokens(requirement.source_text[:120])
-
+    best: tuple[int, float, str, str, bool, str] | None = None
     for clause in contract_clauses:
-        c_type = (clause.clause_type if hasattr(clause, "clause_type") else clause.get("clause_type", "")) or ""
-        c_text = (clause.text if hasattr(clause, "text") else clause.get("text", "")) or ""
-        clause_tokens = normalize_tokens(f"{c_type} {c_text}")
-        if title_tokens and len(title_tokens.intersection(clause_tokens)) >= 1:
-            return RequirementCoverageResult(
-                requirement_id=requirement.requirement_id,
-                coverage_status="fully_covered",
-                matched_clause_type=c_type,
-                matched_clause_text=c_text,
-                explanation=f"Obligation matched contract clause '{c_type}'.",
-            )
+        clause_type, clause_text = _clause_parts(clause)
+        combined = f"{clause_type} {clause_text}"
+        shared = requirement_tokens & normalize_tokens(combined)
+        if not shared:
+            continue
+        ratio = len(shared) / max(1, len(requirement_tokens))
+        polarity_conflict = False
+        requirement_polarity = _polarity(requirement.source_text)
+        clause_polarity = _polarity(combined)
+        if (
+            requirement_polarity != "unspecified"
+            and clause_polarity != "unspecified"
+            and requirement_polarity != clause_polarity
+        ):
+            polarity_conflict = True
+        relation = _duration_relation(requirement.source_text, combined)
+        candidate = (len(shared), ratio, clause_type, clause_text, polarity_conflict, relation)
+        if best is None or (candidate[0], candidate[1]) > (best[0], best[1]):
+            best = candidate
 
+    if best is None:
+        return RequirementCoverageResult(
+            requirement_id=requirement.requirement_id,
+            coverage_status="not_covered",
+            explanation="No contract clause covers this requirement.",
+        )
+
+    shared_count, ratio, clause_type, clause_text, polarity_conflict, relation = best
+    matched = {
+        "requirement_id": requirement.requirement_id,
+        "matched_clause_type": clause_type,
+        "matched_clause_text": clause_text,
+    }
+    # A handful of shared words is not evidence that this requirement was addressed.
+    if shared_count < 2 or ratio < 0.25:
+        return RequirementCoverageResult(
+            requirement_id=requirement.requirement_id,
+            coverage_status="not_covered",
+            explanation="No contract clause covers this requirement.",
+        )
+
+    if polarity_conflict and shared_count >= 2:
+        return RequirementCoverageResult(
+            **matched,
+            coverage_status="contradicted",
+            explanation="Contract language reverses the requirement's obligation.",
+        )
+    if relation == "weaker":
+        return RequirementCoverageResult(
+            **matched,
+            coverage_status="ambiguous",
+            explanation=(
+                "The contract states a different duration, and the requirement "
+                "does not show who that deadline benefits."
+            ),
+        )
+    threshold_relation = _numeric_threshold_relation(
+        requirement.source_text,
+        f"{clause_type} {clause_text}",
+    )
+    if threshold_relation == "weaker" and shared_count >= 2:
+        return RequirementCoverageResult(
+            **matched,
+            coverage_status="partially_covered",
+            explanation="Contract numeric threshold is weaker than the requirement.",
+        )
+    if relation == "unclear":
+        return RequirementCoverageResult(
+            **matched,
+            coverage_status="ambiguous",
+            explanation="Both texts state a duration, but the requirement does not say whether it is a minimum or a maximum.",
+        )
+    if shared_count >= 2 and ratio >= 0.34 and relation in {"compatible", "stricter", "unknown"}:
+        return RequirementCoverageResult(
+            **matched,
+            coverage_status="fully_covered",
+            explanation="Contract language covers the requirement without a weaker threshold or reversed obligation.",
+        )
+    if shared_count >= 2 and ratio >= 0.25:
+        return RequirementCoverageResult(
+            **matched,
+            coverage_status="partially_covered",
+            explanation="Contract language overlaps the requirement but does not cover it fully.",
+        )
     return RequirementCoverageResult(
-        requirement_id=requirement.requirement_id,
-        coverage_status="not_covered",
-        explanation="No contract clause covers this mandatory requirement.",
+        **matched,
+        coverage_status="ambiguous",
+        explanation="Contract language shares too little of the requirement to decide coverage.",
     )

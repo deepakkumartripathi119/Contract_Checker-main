@@ -10,9 +10,10 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from langchain.schema import Document
-from core.vector_store import Chunk, SQLiteVectorStore
+from core.vector_store import Chunk
+from core.sqlite_vector_store import SQLiteVectorStore
+from core.sqlite_cache import SQLiteCache
 from core.state import _missing_clauses_reducer
-from core.cache import SQLiteCache
 from core.citation_verifier import (
     verify_citation,
     verify_compliance_result,
@@ -241,7 +242,8 @@ class TestProjectStructure(unittest.TestCase):
         self.assertEqual(len(res["relevant_docs"]), 0)
         self.assertTrue(len(res["answer"]) > 0)
         verdict = res["answer"][0]
-        self.assertTrue(verdict["compliant"])
+        self.assertFalse(verdict["compliant"])
+        self.assertEqual(verdict["compliance_status"], "review_required")
         self.assertEqual(verdict["policy_source"], "NO INTERNAL POLICY FOUND")
 
     def test_empty_retrieval_requires_review_when_policy_search_is_unknown(self):
@@ -504,7 +506,7 @@ class TestProjectStructure(unittest.TestCase):
 
         # Vendor contract that ONLY contains payment terms (omits confidentiality!)
         contract_clauses = [
-            {"clause_type": "Payment Terms", "text": "Vendor shall be paid within 30 days."},
+            {"clause_type": "Payment Terms", "text": "Invoices are Net 30."},
         ]
         state = {
             "contract": ["contract text"],
@@ -611,21 +613,51 @@ class TestProjectStructure(unittest.TestCase):
         )
         store = SQLiteVectorStore(db_path=":memory:")
         store.add_chunks("nexify", policy)
+        decided_answers = [
+            {
+                "clause_text": clause["text"],
+                "clause_title": clause["clause_type"],
+                "is_missing_clause": False,
+            }
+            for clause in contract
+        ]
         with patch("pipeline.nodes.missing_clause_checker.get_vector_store", return_value=store):
             findings = missing_clause_checker(
+                {
+                    "org_id": "nexify",
+                    "extracted_clauses": contract,
+                    "answer": decided_answers,
+                }
+            )["missing_clauses"]
+            unresolved = missing_clause_checker(
                 {"org_id": "nexify", "extracted_clauses": contract}
             )["missing_clauses"]
 
         self.assertFalse(used_fallback)
         self.assertEqual(len(contract), 5)
-        self.assertEqual(len(findings), 2)
-        requirement_ids = {
-            finding["policy_requirement_id"] for finding in findings
+        observed = {
+            finding["policy_requirement_id"].rsplit(":", 1)[-1]: finding["compliance_status"]
+            for finding in findings
         }
-        self.assertEqual(len(requirement_ids), 2)
-        self.assertTrue(
-            all(requirement_id.endswith((":3", ":5")) for requirement_id in requirement_ids)
+        self.assertEqual(
+            observed,
+            {
+                "1.2": "non_compliant",
+                "2.2": "non_compliant",
+                "3": "non_compliant",
+                "5": "non_compliant",
+            },
         )
+        payment_window = next(
+            finding
+            for finding in unresolved
+            if finding["policy_requirement_id"].rsplit(":", 1)[-1] == "1.1"
+        )
+        self.assertEqual(payment_window["compliance_status"], "review_required")
+        labels = {finding["clause_title"] for finding in findings}
+        self.assertIn("🚨 MISSING MANDATORY CLAUSE: Late Penalties", labels)
+        self.assertIn("🚨 MISSING MANDATORY CLAUSE: Liability Caps", labels)
+        self.assertNotIn("🚨 MISSING MANDATORY CLAUSE: Payment and Invoicing Terms", labels)
         self.assertTrue(
             all(
                 finding["citation_verified"]
@@ -692,7 +724,7 @@ class TestProjectStructure(unittest.TestCase):
             cache_factory.return_value.get_verdict.return_value = None
             result = evaluate_micro_batch([item])
         self.assertEqual(result[0]["policy_source"], "NO INTERNAL POLICY FOUND")
-        self.assertTrue(result[0]["compliant"])
+        self.assertIn(result[0]["compliance_status"], {"compliant", "review_required"})
         self.assertIn("checked internal policy contains no applicable rule", result[0]["reason"])
 
     def test_favorable_payment_deviation_is_compliant_in_single_path(self):
@@ -866,9 +898,10 @@ class TestProjectStructure(unittest.TestCase):
         with patch("pipeline.nodes.compliance_checker.get_cache") as cache_factory:
             cache_factory.return_value.get_verdict.return_value = None
             result = evaluate_micro_batch([item])[0]
-        self.assertTrue(result["compliant"])
         self.assertEqual(result["policy_source"], "NO INTERNAL POLICY FOUND")
-        self.assertNotIn("Edge Case", result["clause_text"])
+        self.assertIn(result["compliance_status"], {"compliant", "review_required"})
+        self.assertIn("Edge Case", result["clause_text"])
+        self.assertIn("$500,000", result["clause_text"])
 
     def test_prompt_keeps_favorable_payment_distinct_from_silent_policy(self):
         """The payment rule must require policy-grounded favorable-deviation reasoning."""
@@ -876,12 +909,9 @@ class TestProjectStructure(unittest.TestCase):
         self.assertIn("FAVORABLE DEVIATION", prompt)
         self.assertIn("covered topic", prompt)
         self.assertIn("do not describe the topic as silent", prompt)
-        self.assertIn("Evaluate any late-payment penalty separately", prompt)
-        self.assertIn("PAYMENT EVIDENCE", prompt)
-        self.assertIn(
-            "differs from the standard [policy payment term] but is treated as a favorable deviation",
-            prompt,
-        )
+        self.assertIn("unless that rule is written in the retrieved policy", prompt)
+        self.assertNotIn("PAYMENT EVIDENCE", prompt)
+        self.assertNotIn("INDEMNIFICATION EXPLANATION", prompt)
 
     def test_silent_policy_output_uses_verified_no_policy_marker(self):
         """Verified silence is explicit; retrieval failure remains manual review."""
@@ -896,7 +926,8 @@ class TestProjectStructure(unittest.TestCase):
         }
         silent = _no_policy_result(item)
         failed = _retrieval_review_result(item)
-        self.assertTrue(silent["compliant"])
+        self.assertFalse(silent["compliant"])
+        self.assertEqual(silent["compliance_status"], "review_required")
         self.assertEqual(silent["policy_source"], "NO INTERNAL POLICY FOUND")
         self.assertFalse(failed["compliant"])
         self.assertEqual(failed["policy_source"], "POLICY_RETRIEVAL_FAILED")
@@ -1150,6 +1181,191 @@ class TestProjectStructure(unittest.TestCase):
         self.assertEqual(len(p2), 1)
         self.assertEqual(len(m2), 1)
         self.assertEqual(m2[0]["clause_title"], "Missing: Security")
+
+    def test_unconfigured_silence_defaults_to_review_required(self):
+        from core.tenant import get_tenant_config, _IN_MEMORY_TENANTS
+
+        org = "phase-a-missing-tenant"
+        _IN_MEMORY_TENANTS.pop(org, None)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEFAULT_SILENT_POLICY_BEHAVIOR", None)
+            _IN_MEMORY_TENANTS.pop(org, None)
+            config = get_tenant_config(org)
+        self.assertEqual(config.silent_policy_behavior, "review_required")
+        _IN_MEMORY_TENANTS.pop(org, None)
+
+    def test_saved_silence_preference_is_not_overwritten(self):
+        from core.tenant import (
+            TenantConfig,
+            get_tenant_config,
+            save_tenant_config,
+            _IN_MEMORY_TENANTS,
+        )
+
+        tmp_dir = tempfile.mkdtemp()
+        org = "phase-a-saved-tenant"
+        try:
+            with patch.dict(os.environ, {"SQLITE_DB_PATH": os.path.join(tmp_dir, "tenants.db")}):
+                _IN_MEMORY_TENANTS.pop(org, None)
+                save_tenant_config(
+                    TenantConfig(
+                        org_id=org,
+                        name="Saved Org",
+                        silent_policy_behavior="compliant",
+                    )
+                )
+                _IN_MEMORY_TENANTS.pop(org, None)
+                loaded = get_tenant_config(org)
+            self.assertEqual(loaded.silent_policy_behavior, "compliant")
+        finally:
+            _IN_MEMORY_TENANTS.pop(org, None)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_semantic_cache_isolates_tenant_settings(self):
+        cache = SQLiteCache(db_path=":memory:")
+        original = "Vendor must send invoices at the end of each month."
+        paraphrase = "Invoices shall be dispatched by vendor on a monthly basis."
+        embedding = [1.0] + [0.0] * 15
+        near = [0.99] + [0.05] * 15
+        cache.set_verdict(
+            "org1",
+            original,
+            {"compliant": True, "reason": "old settings"},
+            embedding=embedding,
+            tenant_settings="compliant:allow_favorable",
+            version="v1.0",
+        )
+        missed = cache.get_verdict(
+            paraphrase,
+            "org1",
+            embedding=near,
+            threshold=0.90,
+            tenant_settings="review_required:allow_favorable",
+            version="v1.0",
+        )
+        self.assertIsNone(missed)
+        hit = cache.get_verdict(
+            paraphrase,
+            "org1",
+            embedding=near,
+            threshold=0.90,
+            tenant_settings="compliant:allow_favorable",
+            version="v1.0",
+        )
+        self.assertEqual(hit["cache_tier"], "tier2_semantic")
+
+    def test_batch_review_required_is_not_rewritten_from_boolean(self):
+        result = _normalize_batch_result(
+            {
+                "status": "REVIEW_REQUIRED",
+                "compliant": True,
+                "reason": "Evidence is incomplete.",
+            },
+            {
+                "clause": {
+                    "text": "Vendor may publish a case study.",
+                    "clause_type": "Publicity",
+                }
+            },
+            [
+                Document(
+                    page_content="Publicity requires prior written consent.",
+                    metadata={"heading": "Publicity", "source": "Policy.pdf"},
+                )
+            ],
+        )
+        self.assertEqual(result["compliance_status"], "review_required")
+        self.assertFalse(result["compliant"])
+
+    def test_requirement_coverage_is_generic(self):
+        from core.requirements import (
+            PolicyRequirement,
+            assess_requirement_coverage,
+            is_informational_section,
+        )
+
+        self.assertFalse(
+            is_informational_section(
+                "Records Retention",
+                "Vendor is responsible for keeping project records for seven years.",
+            )
+        )
+
+        unseen = PolicyRequirement(
+            requirement_id="retention",
+            section_title="Records Retention",
+            source_text="The vendor shall retain project records for seven years.",
+        )
+        unrelated = [
+            {
+                "clause_type": "Publicity",
+                "text": "Vendor may use the customer logo in marketing.",
+            }
+        ]
+        self.assertEqual(
+            assess_requirement_coverage(unseen, unrelated).coverage_status,
+            "not_covered",
+        )
+
+        audit = PolicyRequirement(
+            requirement_id="audit",
+            section_title="Audit Rights",
+            source_text="Customer reserves the right to audit and inspect vendor books and records.",
+        )
+        report_only = [
+            {
+                "clause_type": "Compliance",
+                "text": "Vendor will provide an annual audit report upon request.",
+            }
+        ]
+        self.assertNotEqual(
+            assess_requirement_coverage(audit, report_only).coverage_status,
+            "fully_covered",
+        )
+        inspection = [
+            {
+                "clause_type": "Inspection",
+                "text": "Customer is entitled to inspect books and records of the vendor.",
+            }
+        ]
+        self.assertEqual(
+            assess_requirement_coverage(audit, inspection).coverage_status,
+            "fully_covered",
+        )
+
+    def test_policy_activation_restores_index_when_version_persist_fails(self):
+        from pipeline.nodes.retriever import process_uploaded_files
+
+        store = SQLiteVectorStore(db_path=":memory:")
+        initial = Chunk(
+            id="c-initial",
+            org_id="restore-org",
+            doc_id="doc-old",
+            chunk_type="child",
+            text="Initial policy content",
+            embedding=[0.1] * 16,
+        )
+        store.add_chunks("restore-org", [initial])
+        replacement = Chunk(
+            id="c-new",
+            org_id="restore-org",
+            doc_id="doc-new",
+            chunk_type="child",
+            text="Replacement policy content",
+        )
+        embedder = MagicMock()
+        embedder.embed_documents.return_value = [[0.2] * 16]
+        uploaded = MagicMock()
+        uploaded.name = "replacement.pdf"
+        with patch("pipeline.nodes.retriever.get_vector_store", return_value=store), \
+             patch("pipeline.nodes.retriever.get_embedding_model", return_value=embedder), \
+             patch("pipeline.nodes.retriever.parse_policy_pdf", return_value=[replacement]), \
+             patch("core.tenant.bump_tenant_policy_version", side_effect=RuntimeError("version write failed")):
+            with self.assertRaises(RuntimeError):
+                process_uploaded_files([uploaded], org_id="restore-org")
+        remaining = store.export_org_chunks("restore-org")
+        self.assertEqual([chunk.id for chunk in remaining], ["c-initial"])
+        self.assertEqual(remaining[0].text, "Initial policy content")
 
 
 if __name__ == "__main__":

@@ -26,14 +26,12 @@ from core.state import SubState, ClauseComplianceResult, MicroBatchComplianceRes
 from core.model import (
     compliance_model,
     micro_batch_compliance_model,
-    get_config,
-    get_default_org_id,
 )
+from core.settings import get_config, get_default_org_id
 from core.cache import get_cache
 from core.citation_verifier import verify_compliance_result
-from pipeline.nodes.document_parser import remove_synthetic_expected_annotations
 from core.vector_store import get_vector_store
-from pipeline.nodes.retriever import policy_topic_matches
+from core.retrieval import policy_topic_matches
 from prompts.compliance import (
     COMPLIANCE_SYSTEM_PROMPT,
     MICRO_BATCH_COMPLIANCE_SYSTEM_PROMPT,
@@ -70,14 +68,32 @@ def _topic_filtered_docs(clause_type: str, documents: list[Document]) -> list[Do
     ]
 
 
+_VALID_COMPLIANCE_STATUSES = {"compliant", "non_compliant", "review_required"}
+
+
+def resolve_compliance_fields(
+    compliant: bool | None,
+    status: str | None,
+) -> tuple[bool, str]:
+    """Keep an explicit three-state status ahead of the boolean flag."""
+    raw = str(status or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in _VALID_COMPLIANCE_STATUSES:
+        if raw == "review_required":
+            return False, "review_required"
+        return raw == "compliant", raw
+    if compliant is True:
+        return True, "compliant"
+    if compliant is False:
+        return False, "non_compliant"
+    return False, "review_required"
+
+
 def _clause_fields(item: dict) -> tuple[str, str, list[Document]]:
     clause_data = item.get("clause", {})
-    clause_text = remove_synthetic_expected_annotations(
-        (
-            clause_data.get("text", "")
-            if isinstance(clause_data, dict)
-            else getattr(clause_data, "text", "")
-        )
+    clause_text = (
+        clause_data.get("text", "")
+        if isinstance(clause_data, dict)
+        else getattr(clause_data, "text", "")
     )
     clause_type = (
         clause_data.get("clause_type", "Unknown")
@@ -113,14 +129,14 @@ def _system_error_result(
 def _no_policy_result(item: dict, org_id: str | None = None) -> dict:
     clause_text, clause_type, _ = _clause_fields(item)
     resolved_org_id = org_id or item.get("org_id")
-    behavior = "compliant"
+    behavior = "review_required"
     if resolved_org_id:
         try:
             from core.tenant import get_tenant_config
             cfg = get_tenant_config(resolved_org_id)
-            behavior = cfg.silent_policy_behavior
+            behavior = cfg.silent_policy_behavior or "review_required"
         except Exception:
-            behavior = "compliant"
+            behavior = "review_required"
 
     if behavior == "review_required":
         return {
@@ -183,17 +199,15 @@ def _normalize_batch_result(
     item: dict,
     docs: list[Document],
 ) -> dict:
-    status = str(result.get("status", "")).strip().lower()
-    if status and status not in {"compliant", "non_compliant", "non-compliant"}:
+    status = str(result.get("status", "")).strip().lower().replace("-", "_").replace(" ", "_")
+    if status and status not in _VALID_COMPLIANCE_STATUSES:
         raise ValueError(f"batch result has invalid status: {status}")
     compliant = result.get("compliant")
-    if compliant is None:
-        if status in {"compliant", "non_compliant", "non-compliant"}:
-            compliant = status == "compliant"
-        else:
-            raise ValueError("batch result has no valid status or compliant value")
-    if not isinstance(compliant, bool):
+    if compliant is None and status not in _VALID_COMPLIANCE_STATUSES:
+        raise ValueError("batch result has no valid status or compliant value")
+    if compliant is not None and not isinstance(compliant, bool):
         raise ValueError("batch result compliant value is not boolean")
+    compliant, compliance_status = resolve_compliance_fields(compliant, status)
 
     clause_text, clause_type, _ = _clause_fields(item)
     normalized = {
@@ -210,8 +224,8 @@ def _normalize_batch_result(
         "citation_verified": None,
         "clause_title": clause_type,
         "policy_evidence_status": item.get("policy_evidence_status"),
+        "compliance_status": compliance_status,
     }
-    normalized["compliance_status"] = "compliant" if compliant else "non_compliant"
     return verify_compliance_result(normalized, docs)
 
 
@@ -227,12 +241,10 @@ def compliance_checker(state: SubState) -> dict:
         return {"answer": state["answer"]}
 
     clause_data = state.get("clause", {})
-    clause_text = remove_synthetic_expected_annotations(
-        (
-            clause_data.get("text", "")
-            if isinstance(clause_data, dict)
-            else getattr(clause_data, "text", "")
-        )
+    clause_text = (
+        clause_data.get("text", "")
+        if isinstance(clause_data, dict)
+        else getattr(clause_data, "text", "")
     )
     clause_type = (
         clause_data.get("clause_type", "Unknown")
@@ -338,7 +350,12 @@ Internal Policy (retrieved):
     compliance_result["clause_title"] = clause_type
     compliance_result["clause_text"] = clause_text
 
-    compliance_result["compliance_status"] = "compliant" if compliance_result.get("compliant") else "non_compliant"
+    resolved_flag, resolved_status = resolve_compliance_fields(
+        compliance_result.get("compliant"),
+        compliance_result.get("compliance_status"),
+    )
+    compliance_result["compliant"] = resolved_flag
+    compliance_result["compliance_status"] = resolved_status
     # Persist in Two-Tier Cache for future requests
     cache.set_verdict(
         org_id,

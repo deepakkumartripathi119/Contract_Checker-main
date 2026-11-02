@@ -13,8 +13,8 @@ from langgraph.types import Send
 from core.state import AgentState
 from pipeline.nodes.retriever import batch_retrieve, document_retriever
 from core.vector_store import get_vector_store
-from core.model import get_default_org_id
-from pipeline.nodes.retriever import policy_topic_matches
+from core.settings import get_default_org_id
+from core.retrieval import policy_topic_matches
 from pipeline.nodes.query_generator import generate_relevant_docs_node
 from pipeline.nodes.reranker import Reranker
 

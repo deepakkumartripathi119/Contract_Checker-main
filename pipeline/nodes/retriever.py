@@ -19,176 +19,19 @@ Phase 2 Modernizations
 
 from __future__ import annotations
 
-import re
-import os
-from typing import Any, Optional
 from langchain.schema import Document
 from langsmith import traceable
 
-from core.model import get_embedding_model, get_config, get_default_org_id
+from core.model import get_embedding_model
+from core.settings import get_config, get_default_org_id
 from core.state import SubState, Clause
-from core.vector_store import Chunk, VectorStoreBackend, get_vector_store
+from core.vector_store import Chunk, get_vector_store
+from core.retrieval import (
+    deduplicate_parents_max_pooling,
+    policy_topic_matches,
+    rrf_merge,
+)
 from pipeline.nodes.document_parser import parse_policy_pdf
-
-
-def policy_topic_matches(clause_type: str, heading: str, text: str) -> bool:
-    """Check topic overlap with Unicode and multi-language support without assuming fixed taxonomy."""
-    ignored = {
-        "a", "an", "and", "clause", "contract", "for", "in", "of", "on",
-        "policy", "provision", "section", "term", "terms", "the", "to",
-    }
-
-    def tokens(value: str) -> set[str]:
-        return {
-            token
-            for token in re.findall(r"\b\w{2,}\b", value.lower(), re.UNICODE)
-            if token not in ignored
-        }
-
-    clause_terms = tokens(clause_type)
-    searchable = tokens(f"{heading} {text}")
-    if clause_terms and clause_terms.intersection(searchable):
-        return True
-
-    domain_synonyms: list[tuple[set[str], set[str]]] = [
-        ({"insurance", "coverage"}, {"insurance", "coverage", "insured", "liability policy"}),
-        ({"indemnification", "indemnity", "hold harmless", "defense"}, {"indemnif", "hold harmless", "defend"}),
-        ({"payment", "invoicing", "billing", "fees"}, {"payment", "invoice", "net", "billing", "fees", "discounts"}),
-        ({"dispute", "arbitration", "governing law", "jurisdiction"}, {"dispute", "arbitration", "litigation", "governing law", "jurisdiction"}),
-        ({"breach", "security incident", "cyber", "data incident"}, {"breach", "security incident", "incident", "compromise", "notification"}),
-        ({"confidentiality", "nda", "proprietary"}, {"confidential", "non-disclosure", "nda", "proprietary"}),
-        ({"audit", "inspection", "books and records"}, {"audit", "inspect", "records", "books"}),
-    ]
-    c_lower = clause_type.lower()
-    searchable_lower = f"{heading} {text}".lower()
-    for c_syns, p_syns in domain_synonyms:
-        if any(cs in c_lower for cs in c_syns):
-            if any(ps in searchable_lower for ps in p_syns):
-                return True
-
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Reciprocal Rank Fusion (RRF) & Parent Deduplication with Max-Pooling
-# ---------------------------------------------------------------------------
-
-@traceable
-def rrf_merge(
-    dense_hits: list[tuple[float, Chunk]] | list[Chunk],
-    sparse_hits: list[tuple[float, Chunk]] | list[Chunk],
-    w_dense: float = 0.7,
-    w_sparse: float = 0.3,
-    k: int = 60,
-) -> list[tuple[Chunk, float]]:
-    """
-    Combine dense and sparse search rankings using Reciprocal Rank Fusion (RRF).
-
-    Formula:
-        RRF_score(d) = w_dense * (1 / (k + rank_dense(d))) + w_sparse * (1 / (k + rank_sparse(d)))
-
-    Parameters
-    ----------
-    dense_hits : ranked results from dense search (highest score first)
-    sparse_hits: ranked results from sparse BM25 search (highest score first)
-    w_dense    : weight for dense retrieval (default 0.7)
-    w_sparse   : weight for sparse retrieval (default 0.3)
-    k          : smoothing constant (default 60, per Cormack et al.)
-
-    Returns
-    -------
-    List of (Chunk, combined_rrf_score) sorted descending by combined score.
-    """
-    chunk_map: dict[str, Chunk] = {}
-    rrf_scores: dict[str, float] = {}
-
-    def _extract_chunk(item: Any) -> Chunk:
-        return item[1] if isinstance(item, tuple) else item
-
-    for rank, item in enumerate(dense_hits, start=1):
-        chunk = _extract_chunk(item)
-        cid = chunk.id
-        chunk_map[cid] = chunk
-        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + (w_dense / (k + rank))
-
-    for rank, item in enumerate(sparse_hits, start=1):
-        chunk = _extract_chunk(item)
-        cid = chunk.id
-        chunk_map[cid] = chunk
-        rrf_scores[cid] = rrf_scores.get(cid, 0.0) + (w_sparse / (k + rank))
-
-    sorted_results = [
-        (chunk_map[cid], rrf_scores[cid])
-        for cid in sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)
-    ]
-    return sorted_results
-
-
-@traceable
-def deduplicate_parents_max_pooling(
-    scored_chunks: list[tuple[Chunk, float]],
-    store: VectorStoreBackend,
-    top_k: int = 5,
-    org_id: str | None = None,
-) -> list[Document]:
-    """
-    Group matched child chunks by parent_id and max-pool their RRF scores.
-
-    Assigns the parent chunk the maximum score among all its matching children.
-    Fetches the full parent section text to provide rich context for the LLM.
-    For flat documents where parent_id is None, the child chunk is used directly.
-    """
-    if not scored_chunks:
-        return []
-
-    parent_scores: dict[str, float] = {}
-    parent_matched_children: dict[str, list[dict]] = {}
-    fallback_chunk_map: dict[str, Chunk] = {}
-
-    for child, score in scored_chunks:
-        target_id = child.parent_id or child.id
-        fallback_chunk_map[child.id] = child
-
-        if target_id not in parent_scores or score > parent_scores[target_id]:
-            parent_scores[target_id] = score
-
-        if target_id not in parent_matched_children:
-            parent_matched_children[target_id] = []
-        parent_matched_children[target_id].append({
-            "child_id": child.id,
-            "breadcrumb": child.breadcrumb,
-            "score": score,
-        })
-
-    sorted_parent_ids = sorted(
-        parent_scores.keys(),
-        key=lambda pid: parent_scores[pid],
-        reverse=True,
-    )[:top_k]
-
-    docs: list[Document] = []
-    for pid in sorted_parent_ids:
-        parent_chunk = store.get_parent(pid, org_id=org_id)
-        if not parent_chunk:
-            parent_chunk = fallback_chunk_map.get(pid)
-
-        if not parent_chunk:
-            continue
-
-        doc = Document(
-            page_content=parent_chunk.text,
-            metadata={
-                **parent_chunk.metadata,
-                "breadcrumb": parent_chunk.breadcrumb,
-                "source": parent_chunk.metadata.get("doc_name", "policy"),
-                "chunk_id": parent_chunk.id,
-                "rrf_score": parent_scores[pid],
-                "matched_children": parent_matched_children.get(pid, []),
-            },
-        )
-        docs.append(doc)
-
-    return docs
 
 
 # ---------------------------------------------------------------------------
@@ -234,12 +77,23 @@ def process_uploaded_files(
     for chunk, emb in zip(child_chunks, embeddings):
         chunk.embedding = emb
 
-    # Atomic staged swap: replace existing chunks only after parsing and embedding succeed
-    store.replace_org_chunks(org_id, all_chunks)
+    # Keep the previous index until the new revision is recorded.
+    # Chunk replacement and version persistence use separate connections, so
+    # this is failure-safe restoration, not one cross-store transaction.
+    previous_chunks = store.export_org_chunks(org_id)
+    try:
+        store.replace_org_chunks(org_id, all_chunks)
+        from core.tenant import bump_tenant_policy_version
+        bump_tenant_policy_version(org_id)
+    except Exception:
+        try:
+            store.replace_org_chunks(org_id, previous_chunks)
+        except Exception as restore_error:
+            raise RuntimeError(
+                "Policy activation failed and the previous policy index could not be restored."
+            ) from restore_error
+        raise
 
-    # Invalidate cache and bump policy version for this org
-    from core.tenant import bump_tenant_policy_version
-    bump_tenant_policy_version(org_id)
     from core.cache import get_cache
     get_cache().invalidate(org_id)
 
