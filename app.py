@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from pipeline.nodes.document_parser import parse_vendor_contract
+from pipeline.nodes.document_parser import leaf_clauses, parse_vendor_contract
 from pipeline.nodes.extract_clause import extract_clauses
 from pipeline.nodes.retriever import process_uploaded_files
 from core.settings import get_default_org_id
@@ -13,6 +13,7 @@ st.session_state.setdefault("submitted", False)
 st.session_state.setdefault("uploaded_files", [])
 st.session_state.setdefault("retrievers", [])
 
+from core.report_view import for_the_reader, summarize_findings
 from pipeline.graph import app
 from pipeline.subgraph import sub_graph
 
@@ -21,15 +22,6 @@ def _verdict_icon(result: dict) -> str:
     if status == "review_required":
         return "⚠️"
     return "✅" if result.get("compliant") else "❌"
-
-
-def _manual_status_label(result: dict) -> str:
-    status = result.get("compliance_status")
-    if status == "review_required":
-        return "⚠️ Review required"
-    if result.get("compliant"):
-        return "✅ Compliant"
-    return "❌ Non-compliant"
 
 
 def assemble_display_results(
@@ -144,7 +136,7 @@ else:
                     if not used_llm_fallback:
                         state = {
                             "org_id": current_org,
-                            "extracted_clauses": clauses_raw,
+                            "extracted_clauses": leaf_clauses(clauses_raw),
                         }
                     else:
                         state = {
@@ -229,74 +221,71 @@ else:
                     st.subheader("Clause Compliance Results")
 
                     def render_compliance_result(clause, heading=None):
+                        clause = for_the_reader(clause)
                         if heading:
                             st.markdown(heading)
 
                         if clause.get("is_missing_clause"):
-                            status = clause.get("compliance_status")
-                            if status == "review_required":
-                                st.warning("**Status:** ⚠️ Review required")
-                            elif status == "contradicted":
-                                st.error("**Status:** ❌ Conflicts with the policy")
-                            elif status == "partially_covered":
-                                st.error("**Status:** ❌ Only partly covered")
+                            label = clause.get("reader_label") or "Needs a person to review"
+                            if clause.get("needs_review"):
+                                st.warning(f"**Status:** {label}")
                             else:
-                                st.error(
-                                    "**Status:** 🚨 Omitted by Vendor (Non-compliant)"
-                                )
-                            st.markdown(f"**Risk Analysis:** {clause['reason']}")
+                                st.error(f"**Status:** {label}")
+                            if clause.get("reason"):
+                                st.markdown(f"**Risk Analysis:** {clause['reason']}")
+                            if clause.get("review_reason"):
+                                st.info(clause["review_reason"])
                         else:
                             st.markdown(
-                                f"**Extracted Clause (from Input):** {clause['clause_text']}"
+                                f"**Status:** {clause.get('reader_label') or 'Needs a person to review'}"
                             )
-                            st.markdown(f"**Reason:** {clause['reason']}")
+                            if clause.get("clause_text"):
+                                st.markdown(
+                                    f"**Extracted Clause (from Input):** {clause['clause_text']}"
+                                )
+                            if clause.get("reason"):
+                                st.markdown(f"**Reason:** {clause['reason']}")
+                            if clause.get("review_reason"):
+                                st.info(clause["review_reason"])
 
                         if clause.get("cached"):
                             st.caption(
                                 f"⚡ Served from cache ({clause.get('cache_tier', 'exact')})"
                             )
 
-                        if clause.get("policy_evidence_status"):
-                            st.caption(
-                                f"Policy evidence status: {clause['policy_evidence_status']}"
-                            )
-
                         if clause.get("exact_policy_quote"):
-                            if clause.get("citation_verified") is True:
-                                st.markdown(
-                                    f"**Verified Policy Quote:** ✅ *\"{clause['exact_policy_quote']}\"*"
-                                )
-                            elif clause.get("citation_verified") is False:
-                                st.markdown(
-                                    f"**Policy Quote:** ⚠️ *\"{clause['exact_policy_quote']}\" (unverified)*"
-                                )
-                            else:
-                                st.markdown(
-                                    f"**Policy Quote:** *\"{clause['exact_policy_quote']}\"*"
-                                )
+                            quote_label = (
+                                "Verified policy quote"
+                                if clause.get("citation_verified") is True
+                                else "Policy quote"
+                            )
+                            st.markdown(
+                                f'**{quote_label}:** *"{clause["exact_policy_quote"]}"*'
+                            )
 
                         if clause.get("suggested_revision"):
                             st.markdown(
                                 f"**Suggested Revision:** _{clause['suggested_revision']}_"
                             )
 
-                        if clause.get("clauses_internal"):
-                            st.markdown("**Policy References:**")
-                            for entry in clause.get("clauses_internal", []):
-                                st.markdown(f"> *{entry}*")
+                        for place in clause.get("clauses_internal") or []:
+                            st.markdown(f"**Policy:** {place}")
 
                         st.markdown("---")
 
                     present_results, display_missing = assemble_display_results(
                         data, missing_results, used_llm_fallback, clause_groups
                     )
+                    present_results = [for_the_reader(item) for item in present_results]
+                    display_missing = [for_the_reader(item) for item in display_missing]
+                    st.info(summarize_findings(present_results, display_missing)["sentence"])
 
                     if not used_llm_fallback:
                         result_queues = {}
                         for result in present_results:
                             if not result.get("is_missing_clause"):
                                 key = " ".join(
-                                    result.get("clause_text", "").lower().split()
+                                    (result.get("clause_text") or "").lower().split()
                                 )
                                 result_queues.setdefault(key, []).append(result)
 
@@ -372,25 +361,24 @@ else:
                             },
                         },
                     )
-                    data = response["answer"]
+                    data = [for_the_reader(item) for item in response["answer"]]
 
                     st.subheader("Clause Compliance Results")
+                    st.info(summarize_findings(data, [])["sentence"])
                     st.table(
                         {
                             "Clause Title": [d["clause_title"] for d in data],
                             "Extracted Clause (from Input)": [
                                 d["clause_text"] for d in data
                             ],
-                            "Retrieved From": [d["policy_source"] for d in data],
+                            "Retrieved From": [d.get("policy_source") or "" for d in data],
                             "Compliance Logic": [d["reason"] for d in data],
-                            "Status": [_manual_status_label(d) for d in data],
-                            "Suggested Revision": [
-                                (
-                                    d["suggested_revision"]
-                                    if not d["compliant"] and d.get("suggested_revision")
-                                    else "N/A"
-                                )
+                            "Status": [
+                                d.get("reader_label") or "Needs a person to review"
                                 for d in data
+                            ],
+                            "Suggested Revision": [
+                                d.get("suggested_revision") or "N/A" for d in data
                             ],
                         }
                     )

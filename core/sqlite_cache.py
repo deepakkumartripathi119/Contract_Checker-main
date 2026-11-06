@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS compliance_cache (
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cache_org ON compliance_cache(org_id);
+CREATE TABLE IF NOT EXISTS content_cache (
+    cache_key TEXT PRIMARY KEY,
+    org_id    TEXT NOT NULL,
+    value     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_content_org ON content_cache(org_id);
 """
 
 
@@ -228,7 +234,63 @@ class SQLiteCache(CacheBackend):
                 ),
             )
 
+    def _content_key(self, kind: str, org_id: str, *parts: str) -> str:
+        return ":".join((kind, org_id, *parts))
+
+    def get_policy_hash(self, org_id: str) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM content_cache WHERE cache_key = ?",
+                (self._content_key("policy", org_id),),
+            ).fetchone()
+        return row["value"] if row else None
+
+    def set_policy_hash(self, org_id: str, digest: str) -> None:
+        key = self._content_key("policy", org_id)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO content_cache (cache_key, org_id, value)
+                VALUES (?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET value = excluded.value
+                """,
+                (key, org_id, digest),
+            )
+
+    def get_report(self, org_id: str, version: str, file_digest: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM content_cache WHERE cache_key = ?",
+                (self._content_key("report", org_id, version, file_digest),),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["value"])
+
+    def set_report(self, org_id: str, version: str, file_digest: str, report: dict) -> None:
+        key = self._content_key("report", org_id, version, file_digest)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO content_cache (cache_key, org_id, value)
+                VALUES (?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET value = excluded.value
+                """,
+                (key, org_id, json.dumps(report)),
+            )
+
+    def drop_report(self, org_id: str, file_digest: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM content_cache WHERE org_id = ? AND cache_key LIKE ?",
+                (org_id, f"report:{org_id}:%:{file_digest}"),
+            )
+
     def invalidate(self, org_id: str) -> None:
-        """Evict all cached entries for an org (called on policy document re-upload)."""
+        """Evict verdicts and reports. The policy hash is replaced by the caller."""
         with self._connect() as conn:
             conn.execute("DELETE FROM compliance_cache WHERE org_id = ?", (org_id,))
+            conn.execute(
+                "DELETE FROM content_cache WHERE org_id = ? AND cache_key LIKE ?",
+                (org_id, f"report:{org_id}:%"),
+            )

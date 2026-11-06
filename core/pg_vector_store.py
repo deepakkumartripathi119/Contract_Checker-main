@@ -210,7 +210,7 @@ class PgVectorStore(VectorStoreBackend):
             exported.append(_row_to_chunk(row, embedding=embedding))
         return exported
 
-    def replace_org_chunks(self, org_id: str, chunks: list[Chunk]) -> None:
+    def replace_org_chunks(self, org_id: str, chunks: list[Chunk], alongside=None) -> None:
         ordered = sorted(chunks, key=lambda chunk: chunk.parent_id is not None)
         with self.engine.begin() as connection:
             connection.execute(
@@ -255,6 +255,8 @@ class PgVectorStore(VectorStoreBackend):
                         "embedding": embedding,
                     },
                 )
+            if alongside is not None:
+                alongside(connection)
         self._bm25_indices.pop(org_id, None)
 
     def list_docs(self, org_id: str) -> list[str]:

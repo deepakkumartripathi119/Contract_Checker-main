@@ -1,0 +1,52 @@
+# The same image, pointed at managed Postgres, Redis, and a bucket.
+# Copy deploy/cloud.env.example to deploy/cloud.env and fill the values.
+# Then: docker compose -f docker-compose.cloud.yml up -d --build
+#
+# This file does not start a database, Redis, or a local file folder.
+
+services:
+  api:
+    image: contract-checker-app:latest
+    build: .
+    env_file:
+      - deploy/cloud.env
+    environment:
+      VECTOR_STORE_BACKEND: pgvector
+      CACHE_BACKEND: redis
+      OBJECT_STORE_BACKEND: s3
+    command: ["python", "-m", "uvicorn", "services.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    deploy:
+      replicas: ${API_REPLICAS:-2}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  worker:
+    image: contract-checker-app:latest
+    build: .
+    env_file:
+      - deploy/cloud.env
+    environment:
+      VECTOR_STORE_BACKEND: pgvector
+      CACHE_BACKEND: redis
+      OBJECT_STORE_BACKEND: s3
+    command: ["python", "-m", "scripts.worker"]
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    healthcheck:
+      disable: true
+
+  edge:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      API_UPSTREAM: api:8000
+    volumes:
+      - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      api:
+        condition: service_healthy

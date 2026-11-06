@@ -47,6 +47,10 @@ class TenantRepository(ABC):
     def find_by_login(self, login_name: str) -> Optional[TenantConfig]:
         """Return the company for a shared username, or None."""
 
+    @abstractmethod
+    def increment_session(self, org_id: str) -> int:
+        """Add one to the login session and return the new number."""
+
 
 def _json_list(value) -> list:
     if isinstance(value, str):
@@ -70,6 +74,11 @@ def _config_from_mapping(row) -> TenantConfig:
         silent_policy_behavior=row["silent_policy_behavior"],
         favorable_deviation_behavior=row["favorable_deviation_behavior"],
         supported_languages=_json_list(row["supported_languages"]),
+        business_email=field("business_email", "") or "",
+        industry=field("industry", "") or "",
+        company_size=field("company_size", "") or "",
+        headquarters=field("headquarters", "") or "",
+        website=field("website", "") or "",
         login_name=field("login_name"),
         password_hash=field("password_hash"),
         session_version=int(field("session_version", 0) or 0),
@@ -86,6 +95,9 @@ def _ensure_sqlite_login_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE tenant_configs ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0"
         )
+    for column in ("business_email", "industry", "company_size", "headquarters", "website"):
+        if column not in columns:
+            conn.execute(f"ALTER TABLE tenant_configs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_login_name
@@ -143,8 +155,9 @@ class SqliteTenantRepository(TenantRepository):
                     org_id, name, aliases, active_policy_version,
                     silent_policy_behavior, favorable_deviation_behavior,
                     supported_languages, login_name, password_hash,
-                    session_version, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    session_version, business_email, industry, company_size,
+                    headquarters, website, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(org_id) DO UPDATE SET
                     name = excluded.name,
                     aliases = excluded.aliases,
@@ -153,8 +166,13 @@ class SqliteTenantRepository(TenantRepository):
                     favorable_deviation_behavior = excluded.favorable_deviation_behavior,
                     supported_languages = excluded.supported_languages,
                     login_name = excluded.login_name,
+                    business_email = excluded.business_email,
+                    industry = excluded.industry,
+                    company_size = excluded.company_size,
+                    headquarters = excluded.headquarters,
+                    website = excluded.website,
                     password_hash = excluded.password_hash,
-                    session_version = excluded.session_version,
+                    session_version = MAX(tenant_configs.session_version, excluded.session_version),
                     updated_at = datetime('now')
                 """,
                 (
@@ -168,6 +186,11 @@ class SqliteTenantRepository(TenantRepository):
                     config.login_name,
                     config.password_hash,
                     int(config.session_version or 0),
+                    config.business_email,
+                    config.industry,
+                    config.company_size,
+                    config.headquarters,
+                    config.website,
                 ),
             )
             conn.commit()
@@ -186,6 +209,27 @@ class SqliteTenantRepository(TenantRepository):
             if conn is not _MEM_CONN:
                 conn.close()
         return _config_from_mapping(row) if row else None
+
+    def increment_session(self, org_id: str) -> int:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                UPDATE tenant_configs
+                SET session_version = session_version + 1,
+                    updated_at = datetime('now')
+                WHERE org_id = ?
+                RETURNING session_version
+                """,
+                (org_id,),
+            ).fetchone()
+            conn.commit()
+        finally:
+            if conn is not _MEM_CONN:
+                conn.close()
+        if row is None:
+            raise RuntimeError(f"No company '{org_id}' to sign in.")
+        return int(row["session_version"])
 
 
 class PostgresTenantRepository(TenantRepository):
@@ -240,11 +284,14 @@ class PostgresTenantRepository(TenantRepository):
                         org_id, name, aliases, active_policy_version,
                         silent_policy_behavior, favorable_deviation_behavior,
                         supported_languages, login_name, password_hash,
-                        session_version, updated_at
+                        session_version, business_email, industry, company_size,
+                        headquarters, website, updated_at
                     ) VALUES (
                         :org_id, :name, CAST(:aliases AS jsonb), :version,
                         :silent, :favorable, CAST(:languages AS jsonb),
-                        :login_name, :password_hash, :session_version, now()
+                        :login_name, :password_hash, :session_version,
+                        :business_email, :industry, :company_size,
+                        :headquarters, :website, now()
                     )
                     ON CONFLICT (org_id) DO UPDATE SET
                         name = EXCLUDED.name,
@@ -254,8 +301,13 @@ class PostgresTenantRepository(TenantRepository):
                         favorable_deviation_behavior = EXCLUDED.favorable_deviation_behavior,
                         supported_languages = EXCLUDED.supported_languages,
                         login_name = EXCLUDED.login_name,
+                        business_email = EXCLUDED.business_email,
+                        industry = EXCLUDED.industry,
+                        company_size = EXCLUDED.company_size,
+                        headquarters = EXCLUDED.headquarters,
+                        website = EXCLUDED.website,
                         password_hash = EXCLUDED.password_hash,
-                        session_version = EXCLUDED.session_version,
+                        session_version = GREATEST(tenant_configs.session_version, EXCLUDED.session_version),
                         updated_at = now()
                     """
                 ),
@@ -270,8 +322,37 @@ class PostgresTenantRepository(TenantRepository):
                     "login_name": config.login_name,
                     "password_hash": config.password_hash,
                     "session_version": int(config.session_version or 0),
+                    "business_email": config.business_email,
+                    "industry": config.industry,
+                    "company_size": config.company_size,
+                    "headquarters": config.headquarters,
+                    "website": config.website,
                 },
             )
+
+    def increment_session(self, org_id: str) -> int:
+        from sqlalchemy import text
+
+        engine = self._engine()
+        try:
+            with engine.begin() as connection:
+                self._ensure_login_columns(connection)
+                row = connection.execute(
+                    text(
+                        """
+                        UPDATE tenant_configs
+                        SET session_version = session_version + 1, updated_at = now()
+                        WHERE org_id = :org_id
+                        RETURNING session_version
+                        """
+                    ),
+                    {"org_id": org_id},
+                ).first()
+        finally:
+            engine.dispose()
+        if row is None:
+            raise RuntimeError(f"No company '{org_id}' to sign in.")
+        return int(row[0])
 
 
 def get_tenant_repository() -> TenantRepository:

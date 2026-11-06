@@ -12,14 +12,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /usr/sbin/nologin app \
-    && mkdir -p /data \
-    && chown app:app /data
+    && mkdir -p /data /var/log/contract-checker \
+    && chown app:app /data /var/log/contract-checker
 
 COPY requirements.txt .
 RUN pip install --timeout 120 --retries 10 -r requirements.txt \
     && pip uninstall -y opencv-python \
     && pip install --timeout 120 --retries 10 opencv-python-headless==5.0.0.93
-RUN pip install --timeout 300 --retries 5 redis==8.1.0
+RUN pip install --timeout 300 --retries 5 redis==8.1.0 boto3==1.43.123
 
 COPY --chown=app:app app.py .
 COPY --chown=app:app core ./core

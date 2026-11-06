@@ -15,6 +15,7 @@ from typing import TypedDict
 
 from langgraph.graph import StateGraph, END, START
 
+from core.jobs import ANALYSING, MATCHING, set_job_step
 from core.state import AgentState
 from pipeline.nodes.extract_clause import extract_clauses
 from pipeline.nodes.extract_clause_sender import extract_clause_sender
@@ -38,13 +39,29 @@ def bulk_compliance_node(state: BulkState) -> dict:
     return {"answer": evaluate_micro_batch(state.get("compliance_batch", []))}
 
 
+def _analyse(state: AgentState) -> dict:
+    """Compliance starts after the clauses exist. This is that boundary."""
+    job_id = state.get("job_id")
+    if job_id:
+        set_job_step(job_id, ANALYSING)
+    return clause_sender_node(state)
+
+
+def _match(state: AgentState) -> dict:
+    """Missing-requirement matching starts after the clause checks."""
+    job_id = state.get("job_id")
+    if job_id:
+        set_job_step(job_id, MATCHING)
+    return missing_clause_checker(state)
+
+
 graph = StateGraph(AgentState)
 
 graph.add_node("extract_clauses", extract_clauses)
-graph.add_node("clause_sender_node", clause_sender_node)
+graph.add_node("clause_sender_node", _analyse)
 # SkipNode acts as a passthrough to instantly append the compliant-by-default verdict
 graph.add_node("SkipNode", lambda state: {"answer": state.get("answer", [])})
-graph.add_node("missing_clause_checker", missing_clause_checker)
+graph.add_node("missing_clause_checker", _match)
 graph.add_node("BulkCompliance", bulk_compliance_node)
 
 graph.add_conditional_edges(

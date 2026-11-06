@@ -101,6 +101,51 @@ def _doc_id(pdf_bytes: bytes) -> str:
     return hashlib.sha256(pdf_bytes).hexdigest()[:16]
 
 
+def _docx_to_markdown(data: bytes) -> str:
+    """Turn a .docx into lines the heading splitter already understands.
+
+    A numbered paragraph such as ``1. Payment`` stays as written. A Word
+    heading that has no number becomes a Markdown heading. The old binary
+    .doc format is not a zip and is not handled here.
+    """
+    import io
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    with zipfile.ZipFile(io.BytesIO(data)) as package:
+        xml = package.read("word/document.xml")
+    root = ET.fromstring(xml)
+    lines = []
+    for paragraph in root.findall(".//w:p", namespace):
+        texts = [node.text or "" for node in paragraph.findall(".//w:t", namespace)]
+        line = "".join(texts).strip()
+        if not line:
+            continue
+        style = paragraph.find("./w:pPr/w:pStyle", namespace)
+        style_name = ""
+        if style is not None:
+            style_name = (style.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val") or "").lower()
+        if style_name.startswith("heading") and not re.match(r"^\d", line):
+            level = 1
+            digits = re.search(r"(\d+)$", style_name)
+            if digits:
+                level = min(int(digits.group(1)), 4)
+            line = f"{'#' * level} {line}"
+        lines.append(line)
+    return "\n\n".join(lines)
+
+
+def _document_to_markdown(data: bytes) -> str:
+    """PDF bytes use the PDF reader. A .docx zip uses the Word reader."""
+    if data[:2] == b"PK":
+        try:
+            return _docx_to_markdown(data)
+        except Exception:
+            pass
+    return _pdf_to_markdown(data)
+
+
 def _pdf_to_markdown(pdf_bytes: bytes) -> str:
     """
     Convert PDF bytes to Markdown using pymupdf4llm.
@@ -310,7 +355,7 @@ def parse_policy_pdf(
     """
     org_id = org_id or get_default_org_id()
     did = _doc_id(pdf_bytes)
-    markdown = _pdf_to_markdown(pdf_bytes)
+    markdown = _document_to_markdown(pdf_bytes)
     sections = _split_by_headings(markdown, doc_name)
 
     chunks: list[Chunk] = []
@@ -458,7 +503,7 @@ def parse_vendor_contract(
 
     The caller (app.py) checks used_llm_fallback and routes accordingly.
     """
-    markdown = _pdf_to_markdown(pdf_bytes)
+    markdown = _document_to_markdown(pdf_bytes)
     sections = _split_by_headings(markdown, doc_name)
 
     if not sections:
@@ -481,3 +526,35 @@ def parse_vendor_contract(
         })
 
     return clauses, False
+
+
+def leaf_clauses(clauses: list[dict]) -> list[dict]:
+    """Judge a sentence once.
+
+    A heading that has a deeper clause under it is the container. The deeper
+    clause is the one that is checked. A section with no deeper clause stays.
+    """
+    kept = []
+    for index, clause in enumerate(clauses):
+        if not isinstance(clause, dict):
+            kept.append(clause)
+            continue
+        depth = _clause_depth(clause)
+        has_child = False
+        for later in clauses[index + 1:]:
+            if not isinstance(later, dict):
+                break
+            if _clause_depth(later) > depth:
+                has_child = True
+            break
+        if not has_child:
+            kept.append(clause)
+    return kept
+
+
+def _clause_depth(clause: dict) -> int:
+    raw = (clause.get("metadata") or {}).get("depth", 1)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1

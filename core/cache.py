@@ -98,7 +98,27 @@ class CacheBackend(ABC):
 
     @abstractmethod
     def invalidate(self, org_id: str) -> None:
-        """Evict all cache entries for an org (called when policy is updated)."""
+        """Evict all cache entries for an org (called when policy content changes)."""
+
+    @abstractmethod
+    def get_policy_hash(self, org_id: str) -> Optional[str]:
+        """Hash of the policy bytes last indexed for this company."""
+
+    @abstractmethod
+    def set_policy_hash(self, org_id: str, digest: str) -> None:
+        """Remember the policy bytes now indexed. This does not store the PDF."""
+
+    @abstractmethod
+    def get_report(self, org_id: str, version: str, file_digest: str) -> Optional[dict]:
+        """A finished contract report for these bytes and this policy version."""
+
+    @abstractmethod
+    def set_report(self, org_id: str, version: str, file_digest: str, report: dict) -> None:
+        """Save a finished report. The file name is not part of the key."""
+
+    @abstractmethod
+    def drop_report(self, org_id: str, file_digest: str) -> None:
+        """Forget saved reports for one file. Clause verdicts stay."""
 
     @staticmethod
     def normalize_text(text: str) -> str:
@@ -192,6 +212,17 @@ def resolve_cache_scope(
             tenant_settings = ""
     ver = version or COMPLIANCE_EVALUATION_VERSION
     return ver, tenant_settings or ""
+
+
+def file_hash(data: bytes) -> str:
+    """Hash of one file's bytes. The file name is not included."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def policy_set_hash(files: list[bytes]) -> str:
+    """Hash of a set of policy files. Order and file names do not matter."""
+    parts = sorted(file_hash(item) for item in files)
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def get_cache() -> CacheBackend:

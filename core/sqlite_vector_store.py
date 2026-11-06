@@ -264,7 +264,7 @@ class SQLiteVectorStore(VectorStoreBackend):
             exported.append(chunk)
         return exported
 
-    def replace_org_chunks(self, org_id: str, chunks: list[Chunk]) -> None:
+    def replace_org_chunks(self, org_id: str, chunks: list[Chunk], alongside=None) -> None:
         """Atomically replace all chunks for an org within a single transaction."""
         rows = []
         for c in chunks:
@@ -291,6 +291,8 @@ class SQLiteVectorStore(VectorStoreBackend):
                 """,
                 rows,
             )
+            if alongside is not None:
+                alongside(conn)
         self._bm25_indices.pop(org_id, None)
 
     def list_docs(self, org_id: str) -> list[str]:

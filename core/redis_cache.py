@@ -145,10 +145,49 @@ class RedisCache(CacheBackend):
             },
         )
 
+    def _policy_key(self, org_id: str) -> str:
+        return f"cc:policy:{org_id}"
+
+    def _report_key(self, org_id: str, version: str, file_digest: str) -> str:
+        return f"cc:report:{org_id}:{version}:{file_digest}"
+
+    def _report_index(self, org_id: str) -> str:
+        return f"cc:reports:{org_id}"
+
+    def get_policy_hash(self, org_id: str) -> Optional[str]:
+        return self.client.get(self._policy_key(org_id))
+
+    def set_policy_hash(self, org_id: str, digest: str) -> None:
+        self.client.set(self._policy_key(org_id), digest)
+
+    def get_report(self, org_id: str, version: str, file_digest: str) -> Optional[dict]:
+        raw = self.client.get(self._report_key(org_id, version, file_digest))
+        if not raw:
+            return None
+        return json.loads(raw)
+
+    def set_report(self, org_id: str, version: str, file_digest: str, report: dict) -> None:
+        key = self._report_key(org_id, version, file_digest)
+        self.client.set(key, json.dumps(report))
+        self.client.sadd(self._report_index(org_id), key)
+
+    def drop_report(self, org_id: str, file_digest: str) -> None:
+        index = self._report_index(org_id)
+        keys = [key for key in self.client.smembers(index) if str(key).endswith(":" + file_digest)]
+        if not keys:
+            return
+        self.client.delete(*keys)
+        self.client.srem(index, *keys)
+
     def invalidate(self, org_id: str) -> None:
-        """Drop every saved verdict for this company. Called when its policy changes."""
+        """Drop saved verdicts and reports. The policy hash is replaced by the caller."""
         org_key = self._org_key(org_id)
         names = self.client.smembers(org_key)
         if names:
             self.client.delete(*[self._verdict_key(name) for name in names])
         self.client.delete(org_key)
+        report_index = self._report_index(org_id)
+        reports = self.client.smembers(report_index)
+        if reports:
+            self.client.delete(*list(reports))
+        self.client.delete(report_index)

@@ -1,0 +1,49 @@
+.report { text-align: left; }
+.report h2 { margin: 0.15rem 0 0.35rem; color: #1a1740; font-size: 1.65rem; }
+.counts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem; margin: 0.85rem 0 0.35rem; }
+.count {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 0.6rem; align-items: center;
+  border-radius: 1rem; padding: 0.85rem; background: #e7e9ff; color: #3730a3;
+}
+.count .mark {
+  grid-row: 1 / span 2; width: 2rem; height: 2rem; border-radius: 999px;
+  display: grid; place-items: center; font-style: normal; font-weight: 750; background: rgba(255, 255, 255, 0.78);
+}
+.count strong { font-size: 1.45rem; line-height: 1; }
+.count span { font-size: 0.82rem; }
+.count.compliant { background: #e5f8ec; color: #157a3a; }
+.count.missing { background: #fff4e0; color: #b45309; }
+.count.review { background: #fff0e6; color: #c2410c; }
+.count.bad { background: #fde8e8; color: #b42318; }
+.count.inactive { opacity: 0.4; }
+.report-meta { margin: 0.1rem 0 0.85rem; color: #6d6788; }
+.section-label { margin: 1.2rem 0 0.1rem; font-size: 1.15rem; }
+.finding {
+  display: grid; grid-template-columns: 2rem 1fr; gap: 0.75rem; align-items: start;
+  background: transparent; padding: 0.95rem 0.1rem; margin: 0; border-bottom: 1px solid #ece8f8;
+}
+.finding .symbol {
+  width: 1.85rem; height: 1.85rem; border-radius: 999px; display: grid; place-items: center;
+  color: #fff; font-weight: 750; background: #c2410c;
+}
+.finding.ok .symbol { background: #178a4a; }
+.finding.bad .symbol { background: #d92d20; }
+.finding.missing .symbol { background: #d97706; }
+.finding h3 { margin: 0; font-size: 1.05rem; }
+.finding .label { margin: 0.12rem 0 0; font-weight: 700; }
+.finding.ok .label { color: #157a3a; }
+.finding.bad .label { color: #b42318; }
+.finding.missing .label { color: #b45309; }
+.finding.review .label { color: #c2410c; }
+.finding p { margin: 0.4rem 0 0; line-height: 1.55; color: #3c3658; }
+.finding .quote, .finding .place, .finding .suggestion { padding: 0.45rem 0.7rem; border-radius: 0.65rem; }
+.finding.ok .quote, .finding.ok .place, .finding.ok .suggestion { background: #f1faf4; }
+.finding.bad .quote, .finding.bad .place, .finding.bad .suggestion { background: #fff5f5; }
+.finding.missing .quote, .finding.missing .place, .finding.missing .suggestion { background: #fff8ef; }
+.finding.review .quote, .finding.review .place, .finding.review .suggestion { background: #fff6f0; }
+@media (max-width: 1024px) { .counts { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px) {
+  .counts { grid-template-columns: 1fr; }
+  .report h2 { font-size: 1.35rem; }
+  .finding { grid-template-columns: 1.7rem 1fr; gap: 0.55rem; }
+}

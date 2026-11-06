@@ -1,0 +1,20 @@
+.brand {
+  display: flex;
+  gap: 0.7rem;
+  align-items: center;
+}
+.logo {
+  width: var(--logo);
+  height: var(--logo);
+  display: block;
+  flex: none;
+}
+.brand-name {
+  color: #1a1740;
+  font-size: calc(var(--logo) * 0.51);
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.brand-name span { color: #8b8ef2; }
+.tone-navy .brand-name { color: #ffffff; }

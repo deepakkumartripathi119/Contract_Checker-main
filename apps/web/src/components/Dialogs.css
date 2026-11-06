@@ -1,0 +1,16 @@
+.modal {
+  position: fixed; inset: 0; z-index: 8;
+  display: grid; place-items: center;
+  background: rgba(18, 14, 48, 0.38); padding: 1rem;
+}
+.sheet {
+  width: min(32rem, 100%); background: #fff; border-radius: 1.3rem;
+  padding: 1.3rem; box-shadow: 0 24px 60px rgba(40, 24, 90, 0.18);
+}
+.dialog-top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.dialog-top h2 { margin: 0; }
+.dialog-x {
+  width: 2rem; height: 2rem; border: 0; border-radius: 999px; background: #f4f2ff;
+  color: #3d3568; display: grid; place-items: center; padding: 0;
+}
+.dialog-x svg { width: 14px; height: 14px; }

@@ -1,0 +1,36 @@
+.side {
+  position: fixed; top: 0; left: 0; z-index: 4;
+  width: 17.5rem; height: 100vh; overflow: hidden;
+  background: #151a36; color: #f4f6ff;
+  padding: 1.15rem 0.85rem 0.9rem;
+  display: flex; flex-direction: column;
+}
+.side.rail { width: 4.25rem; }
+.side-top { display: flex; align-items: center; justify-content: space-between; }
+.side.rail .side-top { justify-content: center; }
+.slide { width: 2.35rem; height: 2.35rem; border: 0; background: transparent; color: #e7e9f7; }
+.slide svg { width: 24px; height: 24px; }
+.side-rest { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.side .primary { margin-top: 1rem; }
+.vendor-head { display: flex; align-items: center; justify-content: space-between; margin-top: 1rem; color: #e4e7f4; }
+.vendor-head button { width: 2rem; height: 2rem; border: 0; background: transparent; color: #d5d8ee; }
+.vendor-head svg { width: 22px; height: 22px; }
+.side input { width: 100%; margin-top: 0.4rem; background: #10142c; color: #f4f6ff; border: 1px solid #3a4188; border-radius: 0.7rem; padding: 0.55rem 0.7rem; }
+.vendors { flex: 1; min-height: 0; overflow: auto; scrollbar-width: none; }
+.vendors::-webkit-scrollbar { display: none; }
+.vendor-line { display: flex; align-items: center; }
+.vendor-btn, .nav-btn {
+  width: 100%; text-align: left; background: transparent; color: #b4bad2; border: 0;
+  border-radius: 0.75rem; padding: 0.62rem 0.7rem; display: flex; gap: 0.55rem; align-items: center;
+}
+.vendor-btn.current, .nav-btn.current { background: #383e7c; color: #f7f8ff; }
+.bldg { width: 1.85rem; height: 1.85rem; border-radius: 0.5rem; display: grid; place-items: center; }
+.vendor-btn.current .bldg { background: #6a5cff; color: #fff; }
+.bldg svg { width: 20px; height: 20px; }
+.vendor-remove { width: 2rem; height: 2rem; border: 0; background: transparent; color: #d92d20; font-size: 1.2rem; }
+.side-foot { margin-top: auto; }
+.vendor-empty { color: #8b93ad; font-size: 0.82rem; }
+@media (max-width: 1024px) {
+  .side { width: min(18rem, 86vw); }
+  .side.rail { width: 4.25rem; }
+}

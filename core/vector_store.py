@@ -119,7 +119,7 @@ class VectorStoreBackend(ABC):
         """Return every chunk for an org, including embeddings, for rollback."""
 
     @abstractmethod
-    def replace_org_chunks(self, org_id: str, chunks: list[Chunk]) -> None:
+    def replace_org_chunks(self, org_id: str, chunks: list[Chunk], alongside=None) -> None:
         """Atomically replace all chunks for an org within a single transaction."""
 
     @abstractmethod

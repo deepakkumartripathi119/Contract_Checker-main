@@ -1,5 +1,6 @@
 # The shareable stack is Postgres and the app image.
 # pgAdmin is local only: docker compose --profile dev up -d
+name: contract-checker
 
 # Shared by Streamlit, every API copy, and every worker.
 # API_REPLICAS and WORKER_REPLICAS set how many copies start.
@@ -27,6 +28,7 @@ x-checker: &checker
 
 services:
   postgres:
+    container_name: contract-checker-postgres
     image: pgvector/pgvector:0.8.0-pg16
     environment:
       POSTGRES_USER: contract
@@ -43,6 +45,7 @@ services:
       retries: 10
 
   redis:
+    container_name: contract-checker-redis
     image: redis:7-alpine
     ports:
       - "127.0.0.1:6379:6379"
@@ -52,14 +55,101 @@ services:
       timeout: 3s
       retries: 10
 
+  bucket:
+    container_name: contract-checker-bucket
+    image: localstack/localstack:4.7
+    environment:
+      SERVICES: s3
+    ports:
+      - "127.0.0.1:4566:4566"
+    volumes:
+      - contract_checker_bucket:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  bucket-init:
+    container_name: contract-checker-bucket-init
+    image: contract-checker-app:latest
+    depends_on:
+      bucket:
+        condition: service_healthy
+    environment:
+      VECTOR_STORE_BACKEND: sqlite
+      SQLITE_DB_PATH: /tmp/init.db
+      CACHE_BACKEND: sqlite
+      OBJECT_STORE_BACKEND: s3
+      S3_BUCKET: contract-checker
+      S3_ENDPOINT_URL: http://bucket:4566
+      S3_ACCESS_KEY_ID: test
+      S3_SECRET_ACCESS_KEY: test
+      S3_REGION: us-east-1
+    command:
+      - python
+      - -c
+      - |
+        import time
+        import boto3
+        from botocore.config import Config
+        from botocore.exceptions import ClientError
+        client = boto3.client(
+            "s3",
+            endpoint_url="http://bucket:4566",
+            aws_access_key_id="test",
+            aws_secret_access_key="test",
+            region_name="us-east-1",
+            config=Config(s3={"addressing_style": "path"}),
+        )
+        for _ in range(30):
+            try:
+                client.create_bucket(Bucket="contract-checker")
+                break
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
+                    break
+                time.sleep(1)
+            except Exception:
+                time.sleep(1)
+        else:
+            raise SystemExit("The bucket was not created.")
+    restart: "no"
+
   streamlit:
     <<: *checker
+    container_name: contract-checker-streamlit
     ports:
       - "8501:8501"
 
   api:
     <<: *checker
-    command: ["python", "-m", "uvicorn", "services.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["python", "-m", "scripts.api_server"]
+    volumes:
+      - contract_checker_cache:/data
+      - contract_checker_logs:/var/log/contract-checker
+    environment:
+      VECTOR_STORE_BACKEND: pgvector
+      DATABASE_URL: postgresql+psycopg://contract:contract@postgres:5432/contract_checker
+      CACHE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      OBJECT_STORE_BACKEND: s3
+      S3_ENDPOINT_URL: http://bucket:4566
+      S3_BUCKET: contract-checker
+      S3_ACCESS_KEY_ID: test
+      S3_SECRET_ACCESS_KEY: test
+      S3_REGION: us-east-1
+      USE_LLM_OBLIGATION_CHECK: "true"
+      API_LOG_DIR: /var/log/contract-checker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bucket-init:
+        condition: service_completed_successfully
     deploy:
       replicas: ${API_REPLICAS:-2}
     healthcheck:
@@ -72,12 +162,32 @@ services:
   worker:
     <<: *checker
     command: ["python", "-m", "scripts.worker"]
+    environment:
+      VECTOR_STORE_BACKEND: pgvector
+      DATABASE_URL: postgresql+psycopg://contract:contract@postgres:5432/contract_checker
+      CACHE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      OBJECT_STORE_BACKEND: s3
+      S3_ENDPOINT_URL: http://bucket:4566
+      S3_BUCKET: contract-checker
+      S3_ACCESS_KEY_ID: test
+      S3_SECRET_ACCESS_KEY: test
+      S3_REGION: us-east-1
+      USE_LLM_OBLIGATION_CHECK: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bucket-init:
+        condition: service_completed_successfully
     deploy:
       replicas: ${WORKER_REPLICAS:-2}
     healthcheck:
       disable: true
 
   edge:
+    container_name: contract-checker-edge
     image: nginx:1.27-alpine
     ports:
       - "127.0.0.1:8080:80"
@@ -93,6 +203,7 @@ services:
 
   pgadmin:
     profiles: ["dev"]
+    container_name: contract-checker-pgadmin
     image: dpage/pgadmin4:8.14
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
@@ -106,4 +217,13 @@ services:
 
 volumes:
   contract_checker_pg:
+    name: contract_checker-main_contract_checker_pg
+    external: true
   contract_checker_cache:
+    name: contract_checker-main_contract_checker_cache
+    external: true
+  contract_checker_bucket:
+    name: contract_checker-main_contract_checker_bucket
+    external: true
+  contract_checker_logs:
+    name: contract-checker-api-logs

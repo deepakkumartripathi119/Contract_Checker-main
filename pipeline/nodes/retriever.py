@@ -31,7 +31,8 @@ from core.retrieval import (
     policy_topic_matches,
     rrf_merge,
 )
-from pipeline.nodes.document_parser import parse_policy_pdf
+from core.cache import get_cache, policy_set_hash
+from pipeline.nodes.document_parser import _doc_id, parse_policy_pdf
 
 
 # ---------------------------------------------------------------------------
@@ -48,16 +49,23 @@ def process_uploaded_files(
     """
     org_id = org_id or get_default_org_id()
     store = get_vector_store()
+    incoming = []
+    for file in uploaded_files:
+        pdf_bytes = file.read() if hasattr(file, "read") else file
+        incoming.append((getattr(file, "name", "unknown.pdf"), pdf_bytes))
+    digest = policy_set_hash([data for _, data in incoming])
+    cache = get_cache()
+    if digest and cache.get_policy_hash(org_id) == digest:
+        _rename_indexed_policy(store, org_id, incoming)
+        return _stored_doc_ids(store, org_id)
+
     embedding_model = get_embedding_model()
 
     all_chunks: list[Chunk] = []
     child_chunks: list[Chunk] = []
     doc_ids: list[str] = []
 
-    for file in uploaded_files:
-        pdf_bytes = file.read() if hasattr(file, "read") else file
-        doc_name = getattr(file, "name", "unknown.pdf")
-
+    for doc_name, pdf_bytes in incoming:
         chunks = parse_policy_pdf(pdf_bytes, doc_name, org_id=org_id)
         all_chunks.extend(chunks)
 
@@ -77,14 +85,19 @@ def process_uploaded_files(
     for chunk, emb in zip(child_chunks, embeddings):
         chunk.embedding = emb
 
-    # Keep the previous index until the new revision is recorded.
-    # Chunk replacement and version persistence use separate connections, so
-    # this is failure-safe restoration, not one cross-store transaction.
+    # The new index and the policy version commit together. A crash rolls both back.
     previous_chunks = store.export_org_chunks(org_id)
+
+    def _publish(connection) -> None:
+        from core.tenant import advance_policy_version
+
+        try:
+            advance_policy_version(connection, org_id)
+        except Exception as exc:
+            raise RuntimeError("Policy version was not saved.") from exc
+
     try:
-        store.replace_org_chunks(org_id, all_chunks)
-        from core.tenant import bump_tenant_policy_version
-        bump_tenant_policy_version(org_id)
+        store.replace_org_chunks(org_id, all_chunks, alongside=_publish)
     except Exception:
         try:
             store.replace_org_chunks(org_id, previous_chunks)
@@ -93,11 +106,42 @@ def process_uploaded_files(
                 "Policy activation failed and the previous policy index could not be restored."
             ) from restore_error
         raise
+    try:
+        from core.tenant import get_tenant_config
 
-    from core.cache import get_cache
-    get_cache().invalidate(org_id)
+        get_tenant_config(org_id)
+    except Exception:
+        pass
+
+    cache.invalidate(org_id)
+    cache.set_policy_hash(org_id, digest)
 
     return doc_ids
+
+
+def _stored_doc_ids(store, org_id: str) -> list[str]:
+    seen = []
+    for chunk in store.export_org_chunks(org_id):
+        if chunk.doc_id and chunk.doc_id not in seen:
+            seen.append(chunk.doc_id)
+    return seen
+
+
+def _rename_indexed_policy(store, org_id: str, incoming: list[tuple[str, bytes]]) -> None:
+    """Point the indexed sections at the new file name. The vectors stay."""
+    names = {_doc_id(data): name for name, data in incoming}
+    chunks = store.export_org_chunks(org_id)
+    changed = False
+    for chunk in chunks:
+        new_name = names.get(chunk.doc_id)
+        old_name = (chunk.metadata or {}).get("doc_name")
+        if not new_name or not old_name or new_name == old_name:
+            continue
+        chunk.metadata["doc_name"] = new_name
+        chunk.breadcrumb = chunk.breadcrumb.replace(f"Doc: {old_name}", f"Doc: {new_name}", 1)
+        changed = True
+    if changed:
+        store.replace_org_chunks(org_id, chunks)
 
 
 # ---------------------------------------------------------------------------

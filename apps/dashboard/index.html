@@ -3,75 +3,1739 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Contract Checker</title>
+  <title>ClauseIntel</title>
+  <script>
+    try {
+      if (localStorage.getItem("theme") === "dark") document.documentElement.dataset.theme = "dark";
+    } catch (error) { /* the page stays in the light theme */ }
+  </script>
   <style>
-    body { font-family: Georgia, serif; margin: 2rem auto; max-width: 46rem; line-height: 1.45; color: #1c1c1c; }
-    h1 { font-size: 1.6rem; }
-    section { border-top: 1px solid #ccc; margin-top: 1.5rem; padding-top: 1rem; }
-    label { display: block; margin-top: 0.7rem; }
-    input { width: 100%; max-width: 28rem; padding: 0.35rem; }
-    button { margin-top: 0.8rem; margin-right: 0.4rem; }
-    .error { color: #8a1f1f; }
-    .hidden { display: none; }
-    article { border-bottom: 1px solid #eee; padding: 0.6rem 0; }
+    :root {
+      --navy: #16143a;
+      --navy-2: #2a2758;
+      --purple: #5653fa;
+      --purple-soft: #efeaff;
+      --ink: #1c1733;
+      --muted: #6d6788;
+      --line: #e7e1f6;
+      --paper: #f7f6fe;
+      --card: #ffffff;
+      --danger: #9b2c2c;
+      --shadow: 0 18px 50px rgba(40, 24, 90, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Candara, sans-serif;
+      color: var(--ink);
+      background: #f7f6fe;
+    }
+    .wash {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    }
+    .wash svg { width: 100%; height: 100%; display: block; }
+    .auth, .app { position: relative; z-index: 1; }
+    button, input, textarea, select { font: inherit; }
+    button { cursor: pointer; }
+    .hidden { display: none !important; }
+    .auth {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 2rem 1rem;
+    }
+    .auth-card {
+      width: min(26rem, 100%);
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid white;
+      border-radius: 1.6rem;
+      padding: 2rem 1.7rem 1.5rem;
+      box-shadow: var(--shadow);
+    }
+    .logo-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .brand { --logo: 2.5rem; display: flex; gap: 0.7rem; align-items: center; }
+    .logo { width: var(--logo); height: var(--logo); display: block; flex: none; }
+    .brand-name { color: #1a1740; font-size: calc(var(--logo) * 0.51); font-weight: 750; letter-spacing: -0.03em; line-height: 1; }
+    .brand-name span { color: #8b8ef2; }
+    h1 { font-size: 1.85rem; letter-spacing: -0.03em; margin: 1.1rem 0 0.25rem; }
+    h2 { letter-spacing: -0.02em; }
+    .quiet { color: var(--muted); margin: 0 0 1rem; line-height: 1.45; }
+    label { display: block; margin-top: 0.85rem; font-size: 0.92rem; font-weight: 600; }
+    input, textarea, select {
+      width: 100%; margin-top: 0.35rem; padding: 0.78rem 0.9rem;
+      border-radius: 0.85rem; border: 1px solid var(--line); background: #fbfaff; color: var(--ink);
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: 2px solid #d9ccff; border-color: #c4b4ff; background: white;
+    }
+    .primary, .ghost { border: 0; border-radius: 0.9rem; padding: 0.82rem 1rem; margin-top: 1rem; font-weight: 650; }
+    .primary { background: #5653fa; color: white; width: 100%; box-shadow: 0 8px 16px rgba(86, 83, 250, 0.28); }
+    .ghost { background: white; color: var(--ink); border: 1px solid var(--line); width: 100%; }
+    .socials { display: grid; gap: 0.55rem; margin-top: 0.9rem; }
+    .or { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.7rem; align-items: center; color: var(--muted); margin-top: 1rem; font-size: 0.85rem; }
+    .or::before, .or::after { content: ""; height: 1px; background: var(--line); }
+    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    #login-panel, #register-panel { text-align: center; }
+    #login-panel { padding: 2.2rem 1.8rem 1.6rem; }
+    #login-panel .brand, #register-panel .brand { --logo: 3.4rem; justify-content: center; }
+    #login-panel h1 { font-size: 1.7rem; margin-bottom: 0.2rem; }
+    #login-panel .quiet { margin-bottom: 1.2rem; }
+    .field {
+      display: flex; align-items: center; gap: 10px;
+      height: 46px; margin-top: 12px; padding: 0 14px;
+      border: 1px solid #e4e2f0; border-radius: 12px; background: #fff;
+    }
+    .field input {
+      flex: 1; width: auto; height: 100%; margin: 0; padding: 0;
+      border: 0; border-radius: 0; background: transparent; box-shadow: none;
+    }
+    .field input:focus { outline: none; border: 0; background: transparent; }
+    .field:focus-within { border-color: #c9c6f8; }
+    .field .ico { width: 16px; height: 16px; flex: none; display: block; }
+    .eye {
+      width: 28px; height: 28px; margin: 0 0 0 auto; padding: 0;
+      border: 0; border-radius: 8px; background: transparent;
+      display: grid; place-items: center; flex: none;
+    }
+    .eye svg { width: 18px; height: 18px; display: block; }
+    #login-panel .socials svg { width: 20px; height: 20px; flex: none; display: block; }
+    #register-panel { text-align: center; padding: 2.2rem 1.8rem 1.6rem; }
+    #register-panel .brand { justify-content: center; }
+    #register-panel h1 { font-size: 1.55rem; margin-bottom: 0.2rem; }
+    #register-panel .field select {
+      flex: 1; width: auto; height: 100%; margin: 0; padding: 0 18px 0 0;
+      border: 0; background: transparent; appearance: none; color: var(--ink);
+    }
+    #register-panel .field select:focus { outline: none; }
+    .chev { width: 16px; height: 16px; flex: none; }
+    .size-pick { position: relative; }
+    .size-trigger { width: 100%; color: inherit; cursor: pointer; }
+    .size-trigger .placeholder { color: #98a2b3; font-weight: 450; }
+    .size-menu {
+      position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 6;
+      margin: 0; padding: 6px; list-style: none;
+      background: #fff; border: 1px solid #e4e2f0; border-radius: 12px;
+      box-shadow: 0 16px 36px rgba(40, 24, 90, 0.12);
+    }
+    .size-menu button {
+      width: 100%; margin: 0; padding: 10px 12px; text-align: left;
+      border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-weight: 550;
+    }
+    .size-menu button:hover, .size-menu button[aria-selected="true"] { background: #efeaff; color: #3d2fd4; }
+    #login-panel .socials .ghost { display: flex; align-items: center; justify-content: center; gap: 0.55rem; margin-top: 0; font-weight: 600; }
+    .switch { text-align: center; margin: 1rem 0 0; }
+    .switch button { background: none; border: 0; color: var(--purple); font-weight: 700; padding: 0; }
+    .app {
+      min-height: 100vh; display: grid; grid-template-columns: 17.5rem 1fr;
+      transition: grid-template-columns 0.32s ease;
+    }
+    .app.sidebar-closed { grid-template-columns: 4.25rem 1fr; }
+    .side-slot { min-width: 0; overflow: hidden; }
+    .side {
+      position: fixed; top: 0; left: 0; z-index: 4;
+      width: 17.5rem; height: 100vh; overflow: hidden;
+      background: #151a36;
+      color: #f4f6ff; padding: 1.15rem 0.85rem 0.9rem;
+      display: flex; flex-direction: column; gap: 0;
+      transition: transform 0.32s ease, width 0.32s ease;
+    }
+    .app.sidebar-closed .side { width: 4.25rem; transform: none; }
+    .app.sidebar-closed .side-rest { display: none; }
+    .app.sidebar-closed .side .brand { display: flex; justify-content: center; --logo: 2rem; padding: 0; }
+    .app.sidebar-closed .side .brand-name { display: none; }
+    .side-top { display: flex; align-items: center; justify-content: space-between; gap: 0.35rem; }
+    .app.sidebar-closed .side-top { flex-direction: column; align-items: center; justify-content: center; gap: 0.45rem; }
+    .side .brand { --logo: 2.35rem; padding: 0.1rem 0.15rem; gap: 0.65rem; min-width: 0; }
+    .side .brand-name { color: #ffffff; }
+    .side .menu {
+      width: 2.35rem; height: 2.35rem; border: 0; border-radius: 0.65rem;
+      background: transparent; color: #e7e9f7; padding: 0; flex: none;
+    }
+    .side .menu:hover { background: rgba(255, 255, 255, 0.08); }
+    .side .menu svg { width: 24px; height: 24px; }
+    .side-rest { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .side .primary {
+      display: flex; justify-content: center; align-items: center; gap: 0.45rem;
+      margin: 1rem 0 0.15rem; padding: 0.78rem 1rem; border-radius: 0.85rem;
+      font-size: 1rem; font-weight: 700;
+    }
+    .side .plus { width: 18px; height: 18px; flex: none; display: block; }
+    .vendor-head { display: flex; align-items: center; justify-content: space-between; margin: 1rem 0.45rem 0.35rem; }
+    .vendor-head span { color: #e4e7f4; font-size: 0.98rem; font-weight: 700; }
+    #vendor-filter {
+      width: 2rem; height: 2rem; border: 0; border-radius: 0.5rem; background: transparent;
+      color: #d5d8ee; display: grid; place-items: center; padding: 0;
+    }
+    #vendor-filter:hover, #vendor-filter[aria-expanded="true"] { background: rgba(255, 255, 255, 0.08); color: #fff; }
+    #vendor-filter svg { width: 22px; height: 22px; display: block; }
+    .side .vendor-find input {
+      width: 100%; height: 2.5rem; margin: 0 0 0.35rem; padding: 0 0.75rem;
+      background: #10142c; color: #f4f6ff; border: 1px solid #3a4188; border-radius: 0.7rem;
+    }
+    .side .vendor-find input::placeholder { color: #8b93ad; }
+    .vendor-empty { margin: 0.15rem 0.55rem 0.35rem; color: #8b93ad; font-size: 0.82rem; }
+    .nav-btn, .vendor-btn {
+      width: 100%; text-align: left; background: transparent; color: #b4bad2; border: 0;
+      border-radius: 0.75rem; padding: 0.62rem 0.7rem; display: flex; gap: 0.65rem; align-items: center;
+      font-size: 0.98rem; font-weight: 650;
+    }
+    .nav-btn { color: #e7e9f5; }
+    .nav-ico { width: 22px; height: 22px; flex: none; display: block; }
+    .bldg {
+      width: 1.85rem; height: 1.85rem; border-radius: 0.5rem; display: grid; place-items: center; flex: none;
+      color: #c9cdee;
+    }
+    .bldg svg { width: 20px; height: 20px; display: block; }
+    .nav-btn[aria-current="page"], .vendor-btn[aria-current="true"] {
+      background: #383e7c; color: #f7f8ff;
+    }
+    .vendor-btn[aria-current="true"] .bldg { background: #6a5cff; color: #fff; }
+    .vendors {
+      display: grid; gap: 0.2rem; align-content: start; flex: 1; min-height: 0;
+      overflow-x: hidden; overflow-y: auto; scrollbar-width: none;
+    }
+    .vendors::-webkit-scrollbar { display: none; }
+    .side-foot { margin-top: auto; display: grid; gap: 0.15rem; padding-top: 0.7rem; flex: none; }
+    .main { min-width: 0; }
+    .top {
+      display: flex; align-items: center; gap: 0.55rem;
+      padding: 0.95rem 1.4rem 0.2rem;
+    }
+    .company {
+      margin-right: auto; background: transparent; border: 0; box-shadow: none;
+      padding: 0.2rem 0; display: inline-flex; align-items: center; gap: 0.5rem;
+      color: #1a1740; font-weight: 700;
+    }
+    .company svg { width: 18px; height: 18px; flex: none; color: #3d3568; }
+    .vendor-heading {
+      display: flex; align-items: center; gap: 0.45rem; background: transparent;
+      border: 0; box-shadow: none; padding: 0.15rem 0 0.35rem;
+    }
+    .vendor-heading h1 {
+      margin: 0; font-size: 1.15rem; font-weight: 700; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .vendor-mark { background: #efeaff; color: #5653fa; flex: none; }
+    .heading-tools .ghost { width: auto; margin: 0; padding: 0.55rem 0.9rem; }
+    .profile-head { display: flex; align-items: center; gap: 0.9rem; text-align: left; }
+    .profile-head h1 { margin: 0; font-size: 1.55rem; }
+    .profile-head .quiet { margin: 0.2rem 0 0; }
+    .profile-fixed { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; margin: 0; }
+    .profile-fixed div { display: grid; gap: 0.15rem; background: #f4f1ff; border-radius: 0.85rem; padding: 0.75rem 0.85rem; }
+    .profile-fixed dt { color: var(--muted); font-size: 0.78rem; font-weight: 650; }
+    .profile-fixed dd { margin: 0; font-weight: 700; }
+    #profile-message.saved { color: #157a3a; }
+    #toasts {
+      position: fixed; top: 4.5rem; right: 1.1rem; z-index: 8;
+      display: grid; gap: 0.5rem; width: min(22rem, calc(100vw - 5.2rem));
+      pointer-events: none;
+    }
+    .toast {
+      border-radius: 0.85rem; padding: 0.75rem 0.9rem; font-weight: 650;
+      border: 1px solid transparent;
+      backdrop-filter: blur(14px);
+      box-shadow: none;
+    }
+    .toast.ok {
+      background: rgba(23, 138, 74, 0.14); color: #0f6b34;
+      border-color: rgba(23, 138, 74, 0.22);
+    }
+    .toast.bad {
+      background: rgba(180, 35, 24, 0.12); color: #9f1d14;
+      border-color: rgba(180, 35, 24, 0.2);
+    }
+    .report-filter {
+      position: relative; display: flex; flex-wrap: wrap; align-items: center;
+      gap: 0.45rem; margin: 1rem 0 0.85rem;
+    }
+    .filter-toggle {
+      width: 2.35rem; height: 2.35rem; padding: 0; border: 0; border-radius: 0.75rem;
+      display: grid; place-items: center; flex: none;
+      background: rgba(86, 83, 250, 0.14); color: #3d2fd4;
+    }
+    .filter-toggle svg { width: 18px; height: 18px; display: block; }
+    .filter-toggle[aria-expanded="true"] { background: rgba(86, 83, 250, 0.24); }
+    .filter-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-right: auto; }
+    .filter-toggle { margin-left: auto; }
+    .filter-chip {
+      display: inline-flex; align-items: center; gap: 0.2rem;
+      padding: 0.28rem 0.28rem 0.28rem 0.7rem; border-radius: 999px;
+      background: rgba(86, 83, 250, 0.14); color: #3d2fd4; font-weight: 650; font-size: 0.86rem;
+    }
+    .filter-chip button {
+      width: 1.35rem; height: 1.35rem; margin: 0; padding: 0; border: 0; border-radius: 999px;
+      background: transparent; color: inherit; font-size: 1rem; line-height: 1;
+    }
+    .filter-chip button:hover { background: rgba(86, 83, 250, 0.18); }
+    .filter-panel {
+      position: absolute; top: calc(100% + 0.4rem); right: 0; z-index: 6;
+      min-width: min(15.5rem, calc(100vw - 6rem)); padding: 0.22rem; border-radius: 0.8rem;
+      background: rgba(243, 240, 255, 0.62); border: 1px solid rgba(86, 83, 250, 0.16);
+      backdrop-filter: blur(14px); display: grid;
+    }
+    .filter-choice {
+      display: flex; align-items: center; gap: 0.55rem; width: 100%; margin: 0;
+      padding: 0.32rem 0.55rem; border: 0; border-radius: 0.55rem;
+      background: transparent; color: inherit; font: inherit; font-weight: 650; font-size: 0.86rem;
+      text-align: left; white-space: nowrap;
+    }
+    .filter-choice:hover,
+    .filter-choice.is-on { background: rgba(86, 83, 250, 0.12); }
+    .filter-choice strong { margin-left: auto; }
+    .back-link {
+      width: 2rem; height: 2rem; border: 0; border-radius: 999px; background: transparent;
+      color: #1a1740; display: grid; place-items: center; padding: 0;
+    }
+    .back-link svg { width: 18px; height: 18px; display: block; }
+    .icon-btn, .avatar, .menu {
+      width: 2.35rem; height: 2.35rem; border-radius: 999px; border: 1px solid var(--line);
+      background: white; color: var(--ink);
+    }
+    .avatar { background: var(--purple); color: white; font-weight: 750; border: 0; }
+    #check-another {
+      width: auto; margin: 0; padding: 0.55rem 0.9rem; border-radius: 0.85rem;
+      background: rgba(86, 83, 250, 0.14); color: #3d2fd4; border: 0; box-shadow: none;
+    }
+    #check-another:hover { background: rgba(86, 83, 250, 0.22); }
+    #logout {
+      width: 2.35rem; height: 2.35rem; margin: 0; padding: 0; border: 0; border-radius: 0.75rem;
+      display: grid; place-items: center; flex: none;
+      background: rgba(217, 45, 32, 0.14); color: #d92d20;
+    }
+    #logout svg { width: 18px; height: 18px; display: block; }
+    #logout:hover { background: rgba(217, 45, 32, 0.24); }
+    #check-another { display: inline-flex; align-items: center; gap: 0.4rem; }
+    #check-another svg { width: 16px; height: 16px; display: block; flex: none; }
+    #theme { display: grid; place-items: center; padding: 0; }
+    #theme svg { width: 18px; height: 18px; display: block; }
+    html[data-theme="dark"] #theme .when-light,
+    html:not([data-theme="dark"]) #theme .when-dark { display: none; }
+    .workspace { width: min(980px, calc(100% - 2.4rem)); margin: 0 auto; padding: 0.4rem 0 3rem; }
+    .hero, .card, .finding, .count { background: white; border: 1px solid rgba(255, 255, 255, 0.8); border-radius: 1.25rem; box-shadow: var(--shadow); }
+    .hero { padding: 1.2rem 0 2rem; text-align: center; background: transparent; border: 0; box-shadow: none; }
+    .scene-art { width: min(17rem, 78%); height: auto; margin: 0 auto; display: block; }
+    .vendor-hero h1 { margin: 0.15rem 0 0.3rem; font-size: 1.85rem; color: #1a1740; }
+    .choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; text-align: left; margin-top: 1.4rem; }
+    .choice {
+      background: #fff; border: 1px solid #ece9f8; border-radius: 1.15rem;
+      padding: 1.05rem 1.05rem 1.15rem; box-shadow: 0 10px 30px rgba(40, 24, 90, 0.05);
+      display: grid; gap: 0.9rem;
+    }
+    .choice-top { display: grid; grid-template-columns: auto 1fr auto; gap: 0.75rem; align-items: center; }
+    .choice h2 { margin: 0; font-size: 1.02rem; }
+    .choice .quiet { margin: 0.12rem 0 0; font-size: 0.86rem; }
+    .choice-icon {
+      width: 2.55rem; height: 2.55rem; border-radius: 0.8rem; background: #efeaff;
+      display: grid; place-items: center;
+    }
+    .choice-watermark { opacity: 0.28; }
+    .choice-btn {
+      justify-self: center; width: auto; margin: 0; padding: 0.62rem 1.15rem;
+      border-radius: 0.75rem; display: inline-flex; align-items: center; gap: 0.4rem;
+      font-weight: 650; border: 0;
+    }
+    .choice-btn.solid { background: #5653fa; color: #fff; box-shadow: 0 8px 16px rgba(86, 83, 250, 0.25); }
+    .choice-btn.soft { background: #f3f1ff; color: #5653fa; }
+    #replace-note { background: transparent; padding: 0.15rem 0 0.35rem; }
+    .vendor-hero h1 .brand-name { color: #1a1740; font-size: inherit; font-weight: 750; }
+    .vendor-hero h1 .brand-name span { color: #8b8ef2; }
+    #previous-report { margin-top: 0.8rem; }
+    .report-file {
+      display: flex; align-items: center; gap: 0.75rem;
+      background: #f3f0ff; border: 0; border-radius: 0.85rem;
+      padding: 0.55rem 0.55rem 0.55rem 0.9rem; box-shadow: none;
+    }
+    .report-mark {
+      width: 1.7rem; height: 1.7rem; flex: none; color: #5653fa;
+      display: grid; place-items: center;
+    }
+    .report-mark svg { width: 18px; height: 18px; display: block; }
+    .report-name {
+      flex: 1; min-width: 0; margin: 0; padding: 0; border: 0; background: transparent;
+      text-align: left; color: var(--ink); font-weight: 700;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .report-when { flex: none; color: var(--muted); font-size: 0.82rem; white-space: nowrap; }
+    .delete-report {
+      margin: 0; width: 2.2rem; height: 2.2rem; padding: 0; border-radius: 0.65rem;
+      border: 0; background: transparent; color: #d92d20;
+      display: grid; place-items: center;
+    }
+    .delete-report:hover { background: #fff1f1; }
+    .delete-report svg { width: 18px; height: 18px; display: block; }
+    .dialog-x {
+      width: 2rem; height: 2rem; border: 0; border-radius: 999px; background: #f4f2ff;
+      color: #3d3568; display: grid; place-items: center; padding: 0; flex: none;
+    }
+    .dialog-x svg { width: 14px; height: 14px; display: block; }
+    .vendor-line { display: flex; align-items: center; gap: 0.15rem; }
+    .vendor-line .vendor-btn { flex: 1; min-width: 0; }
+    .vendor-remove {
+      width: 2rem; height: 2rem; border: 0; border-radius: 0.55rem; background: transparent;
+      color: #d92d20; display: grid; place-items: center; padding: 0; flex: none;
+    }
+    .vendor-remove:hover { background: rgba(217, 45, 32, 0.16); color: #d92d20; }
+    .vendor-remove svg { width: 18px; height: 18px; display: block; }
+    .cards { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.8rem; align-items: stretch; }
+    .card { padding: 1.35rem; text-align: center; }
+    .card h2 { margin: 0.2rem 0; }
+    .between { align-self: center; color: var(--muted); font-weight: 650; }
+    .drop {
+      border: 1px dashed #c9b8ff; border-radius: 1rem; padding: 1.1rem; background: #fbfaff; color: var(--muted);
+    }
+    .counts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem; margin: 0.85rem 0 0; }
+    .count {
+      display: grid; grid-template-columns: auto 1fr; column-gap: 0.6rem; align-items: center;
+      padding: 0.85rem 0.85rem; text-align: left; background: #e7e9ff; color: #3730a3;
+      border: 0; box-shadow: none; border-radius: 1rem;
+    }
+    .count .mark {
+      grid-row: 1 / span 2; width: 2rem; height: 2rem; border-radius: 999px;
+      display: grid; place-items: center; font-style: normal; font-weight: 750;
+      background: rgba(255, 255, 255, 0.78);
+    }
+    .count strong { display: block; font-size: 1.45rem; letter-spacing: -0.03em; line-height: 1; }
+    .count span { color: inherit; font-size: 0.82rem; line-height: 1.25; opacity: 0.9; }
+    .count.compliant { background: #e5f8ec; color: #157a3a; }
+    .count.missing { background: #fff4e0; color: #b45309; }
+    .count.review { background: #fff0e6; color: #c2410c; }
+    .count.bad { background: #fde8e8; color: #b42318; }
+    .count.inactive { opacity: 0.4; }
+    #report { text-align: left; }
+    .report-title { margin: 0.15rem 0 0.3rem; color: #1a1740; font-size: 1.65rem; }
+    .report-meta { margin: 0.1rem 0 0.85rem; color: var(--muted); font-size: 0.92rem; }
+    .section-label { margin: 1.2rem 0 0.1rem; color: #1a1740; font-size: 1.15rem; }
+    .finding {
+      display: grid; grid-template-columns: 2rem 1fr; gap: 0.75rem; align-items: start;
+      text-align: left; background: transparent; border: 0; border-radius: 0; box-shadow: none;
+      padding: 0.95rem 0.1rem; margin: 0; border-bottom: 1px solid #ece8f8;
+    }
+    .finding .symbol {
+      width: 1.85rem; height: 1.85rem; border-radius: 999px; display: grid; place-items: center;
+      font-weight: 750; color: #fff; background: #c2410c; margin-top: 0.1rem;
+    }
+    .finding.ok .symbol { background: #178a4a; }
+    .finding.bad .symbol { background: #d92d20; }
+    .finding.missing .symbol { background: #d97706; }
+    .finding h3 { margin: 0; font-size: 1.05rem; }
+    .finding .label { margin: 0.12rem 0 0; font-weight: 700; }
+    .finding.ok .label { color: #157a3a; }
+    .finding.bad .label { color: #b42318; }
+    .finding.missing .label { color: #b45309; }
+    .finding.review .label { color: #c2410c; }
+    .finding .body p { margin: 0.4rem 0 0; line-height: 1.55; color: #3c3658; }
+    .finding .quote, .finding .place, .finding .suggestion {
+      padding: 0.45rem 0.7rem; border-radius: 0.65rem;
+    }
+    .finding.ok .quote, .finding.ok .place, .finding.ok .suggestion { background: #f1faf4; }
+    .finding.bad .quote, .finding.bad .place, .finding.bad .suggestion { background: #fff5f5; }
+    .finding.missing .quote, .finding.missing .place, .finding.missing .suggestion { background: #fff8ef; }
+    .finding.review .quote, .finding.review .place, .finding.review .suggestion { background: #fff6f0; }
+    .heading-tools { margin-left: auto; display: flex; align-items: center; gap: 0.35rem; flex: none; }
+    .tool, .heading-tools .delete-report {
+      width: 2.35rem; height: 2.35rem; border: 0; border-radius: 999px; background: transparent;
+      color: #3d3568; display: grid; place-items: center; padding: 0; margin: 0;
+    }
+    .heading-tools .delete-report { color: #d92d20; }
+    .tool:hover { background: #efeaff; color: #3d2fd4; }
+    .heading-tools .delete-report:hover { background: #fff1f1; }
+    .tool svg, .heading-tools .delete-report svg { width: 18px; height: 18px; display: block; }
+    .tip { position: relative; }
+    .tip:hover::after, .tip:focus-visible::after {
+      content: attr(data-tip); position: absolute; top: calc(100% + 0.4rem); right: 0; z-index: 6;
+      width: max-content; max-width: 14rem; padding: 0.35rem 0.55rem; border-radius: 0.45rem;
+      background: #1a1740; color: #fff; font-size: 0.75rem; font-weight: 650; line-height: 1.3;
+      pointer-events: none;
+    }
+    .complete-mark { display: none; position: relative; width: 6.6rem; height: 6.6rem; margin: 0.2rem auto 0.85rem; }
+    #analyzing.complete .spinner, #analyzing.complete .steps { display: none; }
+    #analyzing.complete .complete-mark { display: block; }
+    .complete-mark .halo {
+      position: absolute; inset: 8px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(23, 138, 74, 0.34), rgba(23, 138, 74, 0) 68%);
+      animation: pulse 1.15s ease-in-out infinite;
+    }
+    .complete-mark .orbit, .complete-mark .tick { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .complete-mark .orbit { animation: spin 1.15s linear infinite; }
+    .complete-mark .tick { animation: bob 1.15s ease-in-out infinite; }
+    .complete-mark .tick path { stroke-dasharray: 42; stroke-dashoffset: 42; animation: draw 0.45s 0.2s ease forwards; }
+    #vendor-view { position: relative; min-height: 28rem; }
+    #analyzing:not(.hidden) {
+      position: fixed; z-index: 2; top: 0; right: 0; bottom: 0; left: 17.5rem;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #f7f6fe; padding: 2rem 1rem;
+    }
+    .app.sidebar-closed #analyzing:not(.hidden) { left: 4.25rem; }
+    #analyzing.leaving { opacity: 0; transform: translateY(-12px); transition: opacity 0.48s ease, transform 0.48s ease; }
+    #report.arrive { animation: rise 0.55s ease; }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+    @keyframes bob { 0%, 100% { transform: scale(0.94); } 50% { transform: scale(1.06); } }
+    @keyframes pulse { 0%, 100% { transform: scale(0.82); opacity: 0.45; } 50% { transform: scale(1.12); opacity: 1; } }
+    .row { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+    .note { background: #f3efff; color: #3d3568; border-radius: 0.95rem; padding: 0.85rem 1rem; }
+    .policy-page { width: min(44rem, 100%); margin: 0.6rem auto 0; display: grid; gap: 0.85rem; }
+    .policy-intro { text-align: center; }
+    .policy-mark {
+      width: min(16rem, 78%); height: auto; margin: 0 auto 0.15rem;
+      display: block; background: none; box-shadow: none;
+    }
+    .policy-mark svg { width: 100%; height: auto; display: block; }
+    .policy-intro h1 { margin: 0.15rem 0 0.25rem; font-size: 1.7rem; color: #1a1740; }
+    .policy-intro .quiet { margin-bottom: 0.15rem; }
+    .policy-card {
+      background: #fff; border: 1px solid #ddd6ff; border-radius: 1.15rem;
+      padding: 1.05rem 1.15rem; box-shadow: 0 16px 40px rgba(86, 83, 250, 0.08);
+      display: grid; gap: 0.85rem; text-align: left;
+    }
+    #policy-current { background: linear-gradient(180deg, #f4f1ff, #ffffff 70%); }
+    .policy-upload { background: linear-gradient(180deg, #f3f0ff 0%, #ffffff 58%); }
+    .policy-upload-head { display: flex; align-items: center; gap: 0.85rem; }
+    .policy-card h2 { margin: 0; color: #1a1740; }
+    .policy-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .policy-status { display: flex; align-items: center; gap: 0.85rem; min-width: 0; text-align: left; }
+    .shield {
+      width: 2.6rem; height: 2.6rem; border-radius: 0.8rem; background: #efeaff;
+      display: grid; place-items: center; flex: none;
+    }
+    .policy-status strong { display: block; }
+    .policy-status .file-name { color: var(--muted); font-size: 0.92rem; overflow-wrap: anywhere; }
+    .uploaded { display: flex; align-items: center; gap: 0.35rem; color: #178a4a; font-size: 0.86rem; font-weight: 650; }
+    .uploaded i { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: #22a35a; display: inline-block; }
+    .policy-actions {
+      display: flex; align-items: center; gap: 0.55rem; flex: none;
+      border-left: 1px solid #ece9f8; padding-left: 0.95rem;
+    }
+    .policy-chip {
+      width: auto; margin: 0; padding: 0.62rem 0.9rem; border-radius: 0.8rem;
+      background: #f4f2ff; color: #3d3a8a; border: 1px solid #e4dff8; font-weight: 650;
+      display: inline-flex; align-items: center; gap: 0.35rem;
+    }
+    .policy-file input {
+      position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; border: 0;
+      overflow: hidden; clip: rect(0 0 0 0); flex: none;
+    }
+    .policy-file {
+      height: auto; min-height: 3.25rem; margin-top: 0; background: #fff;
+      border: 1.5px dashed #b7b0f5; padding: 0 0.95rem;
+    }
+    .policy-file span { flex: 1; text-align: left; font-weight: 650; color: #5653fa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .policy-file.has-file span { color: var(--ink); }
+    #policy-submit:disabled { opacity: 1; background: #b7b4ff; color: #fff; box-shadow: none; cursor: default; }
+    #download-policy { background: #5653fa; color: #fff; border-color: transparent; box-shadow: 0 8px 16px rgba(86, 83, 250, 0.25); }
+    #preview-note, #policy-pending, #policy-progress { margin: 0; }
+    .policy-preview {
+      display: flex; flex-direction: column; gap: 0.45rem;
+      height: min(78vh, 48rem); min-height: 18rem;
+      margin-top: 0.85rem; padding: 0.55rem 0.55rem 0.65rem;
+      border-radius: 1.15rem; background: rgba(243, 240, 255, 0.72);
+      border: 1px solid rgba(86, 83, 250, 0.16); backdrop-filter: blur(14px);
+    }
+    .policy-preview-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+      padding: 0.15rem 0.2rem 0.1rem 0.35rem; color: #3d2fd4; flex: none;
+    }
+    .policy-preview-bar strong {
+      min-width: 0; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 0.92rem; margin-right: auto;
+    }
+    .preview-find, .preview-page {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      height: 2rem; margin: 0; padding: 0 0.55rem; border-radius: 999px;
+      background: rgba(86, 83, 250, 0.1); color: #3d2fd4;
+    }
+    .preview-find input, .preview-page input {
+      width: 9.5rem; height: 1.6rem; margin: 0; padding: 0; border: 0; background: transparent;
+      color: inherit; box-shadow: none;
+    }
+    .preview-page input { width: 2.4rem; text-align: center; }
+    .preview-find input:focus, .preview-page input:focus { outline: none; }
+    .preview-count { font-size: 0.78rem; font-weight: 650; color: #6d6788; min-width: 4.5rem; }
+    .preview-tool, #close-preview {
+      width: 2rem; height: 2rem; margin: 0; padding: 0; border: 0; border-radius: 999px;
+      background: rgba(86, 83, 250, 0.12); color: #3d2fd4; display: grid; place-items: center; flex: none;
+    }
+    .preview-tool svg, #close-preview svg { width: 14px; height: 14px; display: block; }
+    .preview-tool:hover, #close-preview:hover { background: rgba(86, 83, 250, 0.22); }
+    #policy-zoom { font-size: 0.78rem; font-weight: 700; min-width: 2.8rem; text-align: center; }
+    .policy-pages {
+      flex: 1 1 auto; min-height: 0; position: relative;
+      overflow: auto; overscroll-behavior: contain; padding: 0.15rem 0.35rem 0.15rem 0.15rem;
+      display: flex; flex-direction: column; align-items: center; gap: 0.75rem;
+    }
+    .policy-pages::-webkit-scrollbar { width: 10px; height: 10px; }
+    .policy-pages::-webkit-scrollbar-thumb { background: rgba(86, 83, 250, 0.45); border-radius: 999px; }
+    .policy-pages figure {
+      position: relative; flex: none; width: calc(100% * var(--zoom, 1)); margin: 0;
+      background: #fff; border-radius: 0.7rem; overflow: hidden;
+      box-shadow: 0 8px 22px rgba(40, 24, 90, 0.08);
+    }
+    .policy-pages img { width: 100%; height: auto; display: block; }
+    .policy-hit {
+      position: absolute; background: rgba(255, 214, 64, 0.45); border-radius: 0.12rem; pointer-events: none;
+    }
+    .policy-hit.now { background: rgba(86, 83, 250, 0.35); outline: 2px solid #5653fa; }
+    .count-line { margin: 0.2rem 0 0; text-align: right; color: var(--muted); font-size: 0.82rem; }
+    .count-line.at-limit { color: var(--danger); font-weight: 700; }
+    .dialog-top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .dialog-top h2 { margin: 0; }
+    #clause-dialog { text-align: left; }
+    #close-clause { display: grid; place-items: center; font-size: 1.2rem; line-height: 1; }
+    #clause-dialog textarea { min-height: 8.5rem; resize: vertical; }
+    .error { color: var(--danger); min-height: 1.2rem; }
+    .spinner {
+      width: 5.2rem; height: 5.2rem; margin: 0 auto 0.8rem; border-radius: 50%;
+      border: 7px dashed #c8b6ff; border-top-color: var(--purple);
+      animation: spin 1.1s linear infinite;
+    }
+    #analyzing:not(.hidden) { animation: rise 0.45s ease; }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(14px); }
+      to { opacity: 1; transform: none; }
+    }
+    .steps {
+      list-style: none; display: flex; justify-content: center; align-items: center;
+      flex-wrap: wrap; gap: 0.35rem; margin: 1.35rem 0 0; padding: 0;
+    }
+    .steps li[data-step] {
+      display: inline-flex; align-items: center; gap: 0.45rem;
+      padding: 0.2rem 0.15rem; background: transparent; color: #b7b3d6; font-weight: 650;
+      transition: color 0.4s ease;
+    }
+    .steps .dot {
+      width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 2px solid #ddd8f2;
+      display: grid; place-items: center; flex: none; background: #fff;
+      transition: background 0.4s ease, border-color 0.4s ease, box-shadow 0.4s ease, transform 0.4s ease;
+    }
+    .steps li.done { color: #178a4a; }
+    .steps li.done .dot { background: #e8f8ee; border-color: #178a4a; }
+    .steps li.done .dot::before { content: "✓"; font-size: 0.72rem; line-height: 1; }
+    .steps li.now { color: #5653fa; }
+    .steps li.now .dot {
+      background: #5653fa; border-color: #5653fa; color: #fff;
+      transform: scale(1.08); box-shadow: 0 0 0 6px rgba(86, 83, 250, 0.16);
+    }
+    .steps li.now .dot::before {
+      content: ""; width: 0.38rem; height: 0.38rem; border-radius: 50%; background: #fff;
+    }
+    .steps .arrow {
+      display: block; align-self: center; width: 1.4rem; height: 1px; margin: 0 0.15rem;
+      background: #e4dff6; position: relative; flex: none; transition: background 0.4s ease;
+    }
+    .steps .arrow::after {
+      content: ""; position: absolute; right: 0; top: -3px;
+      border: 4px solid transparent; border-left: 5px solid #e4dff6;
+      transition: border-color 0.4s ease;
+    }
+    .steps li.done + .arrow { background: #8fd4ae; }
+    .steps li.done + .arrow::after { border-left-color: #8fd4ae; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    dialog {
+      position: fixed; inset: auto; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      margin: 0; border: 0; border-radius: 1.3rem; padding: 1.3rem;
+      width: min(32rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); overflow: auto;
+      box-shadow: 0 24px 60px rgba(40, 24, 90, 0.18);
+    }
+    body.nav-open dialog { left: calc(50% + 8.75rem); width: min(32rem, calc(100vw - 17.5rem - 2rem)); }
+    body.nav-rail dialog { left: calc(50% + 2.125rem); width: min(32rem, calc(100vw - 4.25rem - 2rem)); }
+    dialog::backdrop { background: rgba(18, 14, 48, 0.38); }
+    .menu { display: inline-grid; place-items: center; padding: 0; }
+    .menu .when-closed { display: none; }
+    .menu.is-open .when-closed { display: none; }
+    .menu.is-open .when-open { display: block; }
+    .menu:not(.is-open) .when-open { display: none; }
+    .menu:not(.is-open) .when-closed { display: block; }
+    .scrim { display: none; }
+    html[data-theme="dark"] { color-scheme: dark; --ink: #f4f6ff; --muted: #c5c8e0; }
+    html[data-theme="dark"] body { background: #12162c; color: #f4f6ff; }
+    html[data-theme="dark"] .wash { opacity: 0.22; }
+    html[data-theme="dark"] .auth-card,
+    html[data-theme="dark"] .choice,
+    html[data-theme="dark"] .policy-card,
+    html[data-theme="dark"] .icon-btn,
+    html[data-theme="dark"] dialog,
+    html[data-theme="dark"] .size-menu,
+    html[data-theme="dark"] .field,
+    html[data-theme="dark"] input,
+    html[data-theme="dark"] textarea,
+    html[data-theme="dark"] select {
+      background: #1c2344; color: #f4f6ff; border-color: #3a4188;
+    }
+    html[data-theme="dark"] h1,
+    html[data-theme="dark"] h2,
+    html[data-theme="dark"] .company,
+    html[data-theme="dark"] .vendor-heading,
+    html[data-theme="dark"] .vendor-heading h1,
+    html[data-theme="dark"] .report-title,
+    html[data-theme="dark"] .section-label,
+    html[data-theme="dark"] .choice h2,
+    html[data-theme="dark"] .policy-card h2,
+    html[data-theme="dark"] .back-link { color: #f4f6ff; }
+    html[data-theme="dark"] .quiet,
+    html[data-theme="dark"] .report-meta,
+    html[data-theme="dark"] .report-when,
+    html[data-theme="dark"] .profile-fixed dt { color: #b4bad2; }
+    html[data-theme="dark"] .finding { border-bottom-color: #2c335c; }
+    html[data-theme="dark"] .finding .body p { color: #d5d8ee; }
+    html[data-theme="dark"] .finding.ok .quote,
+    html[data-theme="dark"] .finding.ok .place,
+    html[data-theme="dark"] .finding.ok .suggestion { background: rgba(170, 230, 190, 0.30); color: #e7ffef; }
+    html[data-theme="dark"] .finding.bad .quote,
+    html[data-theme="dark"] .finding.bad .place,
+    html[data-theme="dark"] .finding.bad .suggestion { background: rgba(255, 196, 196, 0.32); color: #ffe8e8; }
+    html[data-theme="dark"] .finding.missing .quote,
+    html[data-theme="dark"] .finding.missing .place,
+    html[data-theme="dark"] .finding.missing .suggestion { background: rgba(255, 214, 160, 0.30); color: #fff3e0; }
+    html[data-theme="dark"] .finding.review .quote,
+    html[data-theme="dark"] .finding.review .place,
+    html[data-theme="dark"] .finding.review .suggestion { background: rgba(255, 196, 160, 0.32); color: #fff1e6; }
+    html[data-theme="dark"] .report-file,
+    html[data-theme="dark"] .note,
+    html[data-theme="dark"] .choice-icon,
+    html[data-theme="dark"] .policy-chip,
+    html[data-theme="dark"] .profile-fixed div { background: rgba(180, 184, 255, 0.12); color: #f4f6ff; }
+    html[data-theme="dark"] .vendor-mark { background: #3d4588; color: #f4f2ff; }
+    html[data-theme="dark"] .company svg,
+    html[data-theme="dark"] .icon-btn,
+    html[data-theme="dark"] .back-link { color: #f4f2ff; }
+    html[data-theme="dark"] .report-name { color: #f4f6ff; }
+    html[data-theme="dark"] .report-mark { color: #c5c7ff; }
+    html[data-theme="dark"] #check-another {
+      background: rgba(180, 184, 255, 0.16); color: #eeeaff;
+      border: 1px solid rgba(197, 199, 255, 0.28);
+    }
+    html[data-theme="dark"] #check-another:hover { background: rgba(180, 184, 255, 0.26); }
+    html[data-theme="dark"] #logout { background: rgba(255, 160, 150, 0.18); color: #ffb4aa; }
+    html[data-theme="dark"] #logout:hover { background: rgba(255, 160, 150, 0.3); }
+    html[data-theme="dark"] .socials .ghost {
+      background: rgba(180, 184, 255, 0.12); color: #f4f6ff;
+      border: 1px solid rgba(197, 199, 255, 0.28);
+    }
+    html[data-theme="dark"] .socials .ghost:hover { background: rgba(180, 184, 255, 0.22); }
+    html[data-theme="dark"] input:-webkit-autofill,
+    html[data-theme="dark"] input:-webkit-autofill:hover,
+    html[data-theme="dark"] input:-webkit-autofill:focus,
+    html[data-theme="dark"] textarea:-webkit-autofill {
+      -webkit-text-fill-color: #f4f6ff;
+      caret-color: #f4f6ff;
+      box-shadow: 0 0 0 1000px #1c2344 inset;
+      transition: background-color 99999s ease-out;
+    }
+    html[data-theme="dark"] #analyzing:not(.hidden) { background: #12162c; }
+    html[data-theme="dark"] #policy-current { background: #1c2344; }
+    html[data-theme="dark"] .policy-preview {
+      background: rgba(36, 42, 82, 0.55); border-color: rgba(197, 199, 255, 0.2); color: #eeeaff;
+    }
+    html[data-theme="dark"] .preview-tool,
+    html[data-theme="dark"] #close-preview { background: rgba(180, 184, 255, 0.16); color: #eeeaff; }
+    html[data-theme="dark"] .preview-find,
+    html[data-theme="dark"] .preview-page { background: rgba(180, 184, 255, 0.12); color: #eeeaff; }
+    html[data-theme="dark"] .preview-count { color: #c5c7ff; }
+    html[data-theme="dark"] .policy-file { background: #12162c; }
+    html[data-theme="dark"] .brand-name,
+    html[data-theme="dark"] .vendor-hero h1 .brand-name { color: #f7f8ff; }
+    html[data-theme="dark"] .brand-name span,
+    html[data-theme="dark"] .vendor-hero h1 .brand-name span { color: #c5c7ff; }
+    html[data-theme="dark"] .choice-btn.soft { background: #2a3168; color: #d9d6ff; }
+    html[data-theme="dark"] .tool { color: #d5d8ee; }
+    html[data-theme="dark"] .tool:hover { background: #2a3168; color: #fff; }
+    html[data-theme="dark"] .toast.ok {
+      background: rgba(120, 210, 160, 0.16); color: #e7ffef;
+      border-color: rgba(170, 230, 190, 0.28);
+    }
+    html[data-theme="dark"] .toast.bad {
+      background: rgba(255, 160, 160, 0.16); color: #ffe8e8;
+      border-color: rgba(255, 196, 196, 0.3);
+    }
+    html[data-theme="dark"] .filter-toggle,
+    html[data-theme="dark"] .filter-chip { background: rgba(180, 184, 255, 0.16); color: #eeeaff; }
+    html[data-theme="dark"] .filter-toggle[aria-expanded="true"] { background: rgba(180, 184, 255, 0.28); }
+    html[data-theme="dark"] .filter-chip button:hover { background: rgba(180, 184, 255, 0.22); }
+    html[data-theme="dark"] .filter-panel {
+      background: rgba(36, 42, 82, 0.48); border-color: rgba(197, 199, 255, 0.2); color: #f4f6ff;
+    }
+    html[data-theme="dark"] .filter-choice:hover,
+    html[data-theme="dark"] .filter-choice.is-on { background: rgba(180, 184, 255, 0.14); }
+    @media (prefers-reduced-motion: reduce) {
+      .app, .side, #analyzing.leaving, #report.arrive { transition: none; animation: none; }
+      .complete-mark .orbit, .complete-mark .tick, .complete-mark .halo { animation: none; }
+      .complete-mark .tick path { stroke-dashoffset: 0; }
+    }
+    @media (max-width: 1024px) {
+      .app, .app.sidebar-closed { grid-template-columns: 1fr; }
+      #analyzing:not(.hidden), .app.sidebar-closed #analyzing:not(.hidden) { left: 4.25rem; }
+      .main { padding-left: 4.25rem; }
+      .side-slot { display: contents; }
+      body.nav-open dialog, body.nav-rail dialog { left: 50%; width: min(32rem, calc(100vw - 2rem)); }
+      .side { width: 4.25rem; transform: none; }
+      .side:not(.open) .side-rest { display: none; }
+      .side:not(.open) .brand { display: flex; justify-content: center; --logo: 1.85rem; padding: 0; }
+      .side:not(.open) .brand-name { display: none; }
+      .side:not(.open) .side-top { flex-direction: column; align-items: center; }
+      .side.open { width: min(18rem, 86vw); }
+      .scrim.show { display: block; position: fixed; inset: 0; background: rgba(16, 12, 40, 0.35); z-index: 3; }
+      .counts { grid-template-columns: repeat(2, 1fr); }
+      .cards, .choice-grid, .policy-row { grid-template-columns: 1fr; }
+      .vendor-heading { flex-wrap: wrap; }
+      .heading-tools { margin-left: auto; }
+      .policy-row { display: grid; }
+      .policy-actions { border-left: 0; padding-left: 0; border-top: 1px solid #ece9f8; padding-top: 0.75rem; }
+      .between { display: none; }
+      .top { flex-wrap: wrap; }
+      .workspace { width: min(980px, calc(100% - 1.2rem)); }
+    }
+    @media (max-width: 520px) {
+      .side, .app.sidebar-closed .side { width: 3.4rem; padding-left: 0.35rem; padding-right: 0.35rem; }
+      .side.open { width: min(18rem, 86vw); }
+      .main { padding-left: 3.4rem; }
+      #analyzing:not(.hidden), .app.sidebar-closed #analyzing:not(.hidden) { left: 3.4rem; }
+      .profile-fixed { grid-template-columns: 1fr; }
+      .counts { grid-template-columns: 1fr 1fr; gap: 0.45rem; }
+      .count { padding: 0.65rem 0.55rem; column-gap: 0.4rem; }
+      .count .mark { width: 1.55rem; height: 1.55rem; }
+      .count strong { font-size: 1.15rem; }
+      .count span { font-size: 0.72rem; }
+      .auth-card, .policy-page { width: calc(100% - 0.8rem); }
+      .auth-card { padding: 1.15rem 0.85rem 1rem; }
+      h1, .report-title, .vendor-hero h1 { font-size: 1.28rem; }
+      .top { flex-wrap: nowrap; padding: 0.55rem 0.45rem 0.1rem; gap: 0.3rem; }
+      .company { flex: 1 1 auto; min-width: 0; font-size: 0.92rem; }
+      .company strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .icon-btn, .avatar { width: 2rem; height: 2rem; flex: none; }
+      #logout { width: 2rem; height: 2rem; padding: 0; flex: none; }
+      .workspace { width: calc(100% - 0.7rem); }
+      .scene-art, .policy-mark { width: min(11rem, 72%); }
+      .choice { padding: 0.8rem; }
+      .choice-watermark { display: none; }
+      .choice-top { grid-template-columns: auto 1fr; gap: 0.55rem; }
+      .choice-btn { width: 100%; justify-content: center; }
+      .heading-tools .ghost { padding: 0.45rem 0.65rem; font-size: 0.85rem; }
+      .steps { flex-direction: column; align-items: flex-start; width: max-content; margin-left: auto; margin-right: auto; }
+      .steps .arrow { width: 2px; height: 0.7rem; margin: 0 0 0 0.62rem; }
+      .steps .arrow::after { display: none; }
+      .finding { grid-template-columns: 1.6rem 1fr; gap: 0.5rem; padding: 0.75rem 0; }
+      .finding .body p { overflow-wrap: anywhere; }
+      .report-file { gap: 0.45rem; padding-right: 0.35rem; }
+      .report-when { font-size: 0.75rem; }
+    }
   </style>
 </head>
 <body>
-  <h1>Contract Checker</h1>
-  <p>This page talks only to the API. It does not open the database.</p>
+  <svg class="logo-sprite" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="logo-fill" x1="8" y1="2" x2="28" y2="34" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#7a6bff"/>
+        <stop offset="1" stop-color="#5b4ef6"/>
+      </linearGradient>
+      <symbol id="clauseintel-logo" viewBox="0 0 36 36">
+        <path fill="url(#logo-fill)" d="M18 2.2l13.2 7.6v16.4L18 33.8 4.8 26.2V9.8z"/>
+        <path d="M18 9.2v13M11.2 13.2h13.6M11.2 13.2l-2.7 4.4h5.4zM24.8 13.2l-2.7 4.4h5.4zM14 24.6h8" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="doc-shield" viewBox="0 0 280 150">
+        <ellipse cx="140" cy="82" rx="108" ry="36" fill="#ececfe"/>
+        <circle cx="36" cy="36" r="5" fill="#ddd9fb"/>
+        <circle cx="244" cy="30" r="6" fill="#e4e0fb"/>
+        <circle cx="250" cy="112" r="4" fill="#ddd9fb"/>
+        <g transform="rotate(-12 96 78)">
+          <rect x="42" y="22" width="92" height="108" rx="16" fill="#f7f5ff" stroke="#ddd6fb"/>
+          <path d="M88 46v18M70 64h36" stroke="#b7b0ea" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+          <path d="M70 64l-9 14h18zM106 64l-9 14h18z" fill="#d9d4f6"/>
+        </g>
+        <g transform="rotate(11 186 76)">
+          <rect x="148" y="18" width="92" height="108" rx="16" fill="#ffffff" stroke="#e4dff8"/>
+          <path d="M166 46h56M166 62h46M166 78h36" stroke="#e0daf6" stroke-width="3.4" stroke-linecap="round"/>
+        </g>
+        <path d="M140 44l28 11v22c0 18-13 28-28 35-15-7-28-17-28-35V55z" fill="#5653fa"/>
+        <path d="M127 76l10 10 20-20" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+    </defs>
+  </svg>
+  <div class="wash" aria-hidden="true">
+    <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">
+      <rect width="1440" height="900" fill="#f7f6fe"/>
+      <path fill="#e4e4fd" d="M-40 520c180-120 280-40 420 20s260 40 420-30 300-20 460 40 220 30 260-20v370H-40z"/>
+      <path fill="#dadafd" d="M-20 640c160-70 300 10 460-20s280-30 430 30 250 10 390-40v290H-20z"/>
+      <ellipse cx="180" cy="160" rx="280" ry="150" fill="#eeeefe"/>
+      <ellipse cx="1280" cy="80" rx="260" ry="140" fill="#e8e8fd"/>
+      <ellipse cx="1180" cy="420" rx="220" ry="120" fill="#ececfe"/>
+    </svg>
+  </div>
+  <div id="signed-out" class="auth">
+    <section class="auth-card" id="login-panel">
+      <div class="brand"><svg class="logo" aria-hidden="true"><use href="#clauseintel-logo"></use></svg><span class="brand-name">Clause<span>Intel</span></span></div>
+      <h1>Welcome Back</h1>
+      <p class="quiet">Sign in to continue to your dashboard</p>
+      <form id="login-form">
+        <label class="field">
+          <span class="sr">Username or email</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" fill="none" stroke="#98a2b3" stroke-width="1.2"/><path d="M2 4.5l6 4.2 6-4.2" fill="none" stroke="#98a2b3" stroke-width="1.2"/></svg>
+          <input name="login_name" required autocomplete="username" placeholder="Username or Email Address">
+        </label>
+        <label class="field">
+          <span class="sr">Password</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2" fill="none" stroke="#98a2b3" stroke-width="1.2"/><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" fill="none" stroke="#98a2b3" stroke-width="1.2"/></svg>
+          <input id="login-password" name="password" type="password" required autocomplete="current-password" placeholder="Password">
+          <button class="eye" type="button" id="toggle-password" aria-label="Show password"></button>
+        </label>
+        <button class="primary" type="submit">Sign In</button>
+      </form>
+      <div class="or">or</div>
+      <div class="socials">
+        <button class="ghost" type="button"><svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3.1l5.7-5.7C34.2 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 12 24 12c3.1 0 5.8 1.2 8 3.1l5.7-5.7C34.2 6.1 29.4 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.3 0-9.8-3.4-11.4-8.1l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.3 4.2-4.1 5.6l6.2 5.2C40.2 35.1 44 30 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg> Continue with Google</button>
+        <button class="ghost" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="3" fill="#0A66C2"/><path fill="#fff" d="M6.7 9.6H9v8.7H6.7zM7.8 5.6a1.35 1.35 0 110 2.7 1.35 1.35 0 010-2.7zM11.2 9.6h2.2v1.2h.1c.3-.6 1.1-1.3 2.3-1.3 2.4 0 2.9 1.6 2.9 3.6v5.2h-2.3v-4.6c0-1.1 0-2.5-1.5-2.5s-1.8 1.2-1.8 2.4v4.7H11.2z"/></svg> Continue with LinkedIn</button>
+      </div>
+        <p id="login-expired" class="error"></p>
+        <p class="switch">Don't have an account? <button type="button" id="show-register">Register Now</button></p>
+    </section>
+    <section class="auth-card hidden" id="register-panel">
+      <div class="brand"><svg class="logo" aria-hidden="true"><use href="#clauseintel-logo"></use></svg><span class="brand-name">Clause<span>Intel</span></span></div>
+      <h1>Register Your Company</h1>
+      <p class="quiet">Tell us about your organization to get started</p>
+      <form id="register-form">
+        <label class="field">
+          <span class="sr">Company name</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 14V3.5A1.5 1.5 0 014.5 2h4A1.5 1.5 0 0110 3.5V14M2 14h12M5 5h1M8 5h1M5 8h1M8 8h1" fill="none" stroke="#98a2b3" stroke-width="1.2" stroke-linecap="round"/></svg>
+          <input name="name" required autocomplete="organization" placeholder="Company Name">
+        </label>
+        <label class="field">
+          <span class="sr">Business email</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" fill="none" stroke="#98a2b3" stroke-width="1.2"/><path d="M2 4.5l6 4.2 6-4.2" fill="none" stroke="#98a2b3" stroke-width="1.2"/></svg>
+          <input name="business_email" type="email" required autocomplete="email" placeholder="Business Email">
+        </label>
+        <label class="field">
+          <span class="sr">Industry</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="6" width="12" height="8" rx="1" fill="none" stroke="#98a2b3" stroke-width="1.2"/><path d="M6 6V4.2A2 2 0 0110 4.2V6" fill="none" stroke="#98a2b3" stroke-width="1.2"/></svg>
+          <input name="industry" required autocomplete="organization" placeholder="Industry">
+        </label>
+        <div class="size-pick">
+          <button class="field size-trigger" type="button" id="size-trigger" aria-haspopup="listbox" aria-expanded="false">
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="5.5" r="1.6" fill="none" stroke="#98a2b3" stroke-width="1.2"/><circle cx="11" cy="6" r="1.3" fill="none" stroke="#98a2b3" stroke-width="1.2"/><path d="M2.5 13c.4-2 2-3 3.5-3s3.1 1 3.5 3M10 10c1.2 0 2.4.6 2.8 2" fill="none" stroke="#98a2b3" stroke-width="1.2" stroke-linecap="round"/></svg>
+            <span id="size-label" class="placeholder">Company Size</span>
+            <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="#98a2b3" stroke-width="1.2" stroke-linecap="round"/></svg>
+          </button>
+          <ul class="size-menu hidden" id="size-menu" role="listbox" aria-label="Company size">
+            <li><button type="button" role="option" data-size="1–10">1–10</button></li>
+            <li><button type="button" role="option" data-size="11–50">11–50</button></li>
+            <li><button type="button" role="option" data-size="51–200">51–200</button></li>
+            <li><button type="button" role="option" data-size="201–500">201–500</button></li>
+            <li><button type="button" role="option" data-size="501–1,000">501–1,000</button></li>
+            <li><button type="button" role="option" data-size="1,000+">1,000+</button></li>
+          </ul>
+          <input type="hidden" name="company_size" id="company-size" value="">
+        </div>
+        <label class="field">
+          <span class="sr">Headquarters location</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 14s4-3.4 4-6.2A4 4 0 004 7.8C4 10.6 8 14 8 14z" fill="none" stroke="#98a2b3" stroke-width="1.2"/><circle cx="8" cy="7.6" r="1.2" fill="none" stroke="#98a2b3" stroke-width="1.2"/></svg>
+          <input name="headquarters" required autocomplete="address-level2" placeholder="Headquarters Location">
+        </label>
+        <label class="field">
+          <span class="sr">Website, optional</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="#98a2b3" stroke-width="1.2"/><path d="M2.5 8h11M8 2.6c1.4 1.5 2.1 3.3 2.1 5.4S9.4 12 8 13.4C6.6 12 5.9 10.2 5.9 8S6.6 4.1 8 2.6z" fill="none" stroke="#98a2b3" stroke-width="1.2"/></svg>
+          <input name="website" autocomplete="url" placeholder="Website (Optional)">
+        </label>
+        <label class="field">
+          <span class="sr">Password</span>
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2" fill="none" stroke="#98a2b3" stroke-width="1.2"/><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" fill="none" stroke="#98a2b3" stroke-width="1.2"/></svg>
+          <input id="register-password" name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="Password">
+          <button class="eye" type="button" id="toggle-register-password" aria-label="Show password"></button>
+        </label>
+        <p id="register-error" class="error"></p>
+        <button class="primary" type="submit">Register Company</button>
+      </form>
+      <p class="switch">Already have an account? <button type="button" id="show-login">Sign In</button></p>
+    </section>
+  </div>
 
-  <section id="signed-out">
-    <h2>Register</h2>
-    <form id="register-form">
-      <label>Company id <input name="org_id" required autocomplete="organization"></label>
-      <label>Company name <input name="name" autocomplete="organization"></label>
-      <label>Username <input name="login_name" required autocomplete="username"></label>
-      <label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
-      <button type="submit">Register</button>
-    </form>
-    <h2>Login</h2>
-    <form id="login-form">
-      <label>Username <input name="login_name" required autocomplete="username"></label>
-      <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
-      <button type="submit">Login</button>
-    </form>
-  </section>
+  <div id="signed-in" class="app hidden">
+    <div class="side-slot">
+    <aside class="side" id="sidebar">
+      <div class="side-top">
+        <div class="brand"><svg class="logo" aria-hidden="true"><use href="#clauseintel-logo"></use></svg><span class="brand-name">Clause<span>Intel</span></span></div>
+        <button class="menu is-open" type="button" id="open-menu" aria-label="Close sidebar" aria-expanded="true">
+          <svg class="when-open" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="7" height="16" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19 8l-4 4 4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg class="when-closed" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="7" height="16" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M13 8l4 4-4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="side-rest">
+      <button class="primary" type="button" id="add-vendor"><svg class="plus" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg> Add Vendor</button>
+      <div class="vendor-head"><span>Vendors</span><button type="button" id="vendor-filter" aria-expanded="false" aria-label="Find a vendor"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.2 7.2V19l-3.6-1.8v-5L4 5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button></div>
+      <label class="vendor-find hidden" id="vendor-find"><span class="sr">Find a vendor</span><input id="vendor-query" type="search" placeholder="Find a vendor" autocomplete="off"></label>
+      <p class="vendor-empty hidden" id="vendor-empty">No matching vendor</p>
+      <div class="vendors" id="vendors"></div>
+      <div class="side-foot">
+        <button class="nav-btn" type="button" id="open-policy"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3.1v6.4c0 4.6-3.2 7.4-8 9.7-4.8-2.3-8-5.1-8-9.7V6.1L12 3z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg> Company policy</button>
+        <button class="nav-btn" type="button"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4L18 18M18 6l-1.6 1.6M7.6 16.4L6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg> Settings</button>
+        <button class="nav-btn" type="button"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 16.6v.2M9.8 9.6a2.2 2.2 0 113.6 1.7c-.7.6-1.2 1-1.2 2v.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg> Help &amp; Support</button>
+      </div>
+      </div>
+    </aside>
+    </div>
+    <div class="main">
+      <header class="top">
+        <div class="scrim" id="scrim"></div>
+        <div class="company"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="3" width="15" height="18" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 7.5h2.2M13.8 7.5H16M8 11.2h2.2M13.8 11.2H16M8 14.8h2.2M13.8 14.8H16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><strong id="company-name"></strong></div>
+        <button class="icon-btn" type="button" id="theme" aria-pressed="false" aria-label="Dark mode">
+          <svg class="when-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <svg class="when-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 3.5a8.2 8.2 0 108 8 6.4 6.4 0 01-8-8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="icon-btn" type="button" aria-label="Notifications">🔔</button>
+        <button class="avatar" type="button" id="avatar" aria-label="Company profile">?</button>
+        <button type="button" id="logout" aria-label="Log out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 7V5h9v14h-9v-2M14 12H4m0 0l3-3M4 12l3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </header>
+      <div class="workspace">
+        <p id="message" class="error hidden" role="status"></p>
+        <section id="policy-view" class="policy-page">
+          <header class="policy-intro">
+            <svg class="policy-mark" aria-hidden="true"><use href="#doc-shield"></use></svg>
+            <h1>Company Policy</h1>
+            <p class="quiet">Every contract and every clause is checked against this file. The company keeps one current policy.</p>
+          </header>
+          <article class="policy-card hidden" id="policy-current">
+            <div class="policy-row">
+              <div class="policy-status">
+                <span class="shield" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 16 16"><path d="M8 1.2l5.2 2.1v4.4c0 3.2-2.2 5.1-5.2 6.7-3-1.6-5.2-3.5-5.2-6.7V3.3L8 1.2z" fill="#5653fa"/></svg></span>
+                <div>
+                  <strong>Company Policy</strong>
+                  <div class="file-name" id="policy-filename"></div>
+                  <div class="uploaded"><i></i> Uploaded</div>
+                </div>
+              </div>
+              <div class="policy-actions">
+                <button class="policy-chip" type="button" id="preview-policy" aria-expanded="false">Preview</button>
+                <button class="policy-chip" type="button" id="download-policy"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7M5.5 7.5L8 10l2.5-2.5M3.5 13h9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg> Download Policy</button>
+              </div>
+            </div>
+            <p class="note hidden" id="preview-note"></p>
+            <div id="policy-preview" class="policy-preview hidden">
+              <div class="policy-preview-bar">
+                <strong id="policy-preview-name"></strong>
+                <label class="preview-find"><span class="sr">Find in the policy</span><input id="policy-find" type="search" placeholder="Find in the policy" autocomplete="off"></label>
+                <span class="preview-count" id="policy-find-count"></span>
+                <button class="preview-tool" type="button" id="find-prev" aria-label="Previous match"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button class="preview-tool" type="button" id="find-next" aria-label="Next match"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button class="preview-tool" type="button" id="page-prev" aria-label="Previous page"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <label class="preview-page"><span class="sr">Page number</span><input id="policy-page" type="number" min="1" value="1"><span id="policy-page-total">/ 1</span></label>
+                <button class="preview-tool" type="button" id="page-next" aria-label="Next page"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                <button class="preview-tool" type="button" id="zoom-out" aria-label="Zoom out">−</button>
+                <span id="policy-zoom">100%</span>
+                <button class="preview-tool" type="button" id="zoom-in" aria-label="Zoom in">+</button>
+                <button type="button" id="close-preview" aria-label="Close preview"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4L4 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+              </div>
+              <div class="policy-pages"></div>
+            </div>
+            <p class="note hidden" id="policy-pending"></p>
+          </article>
+          <form id="policy-form" class="policy-card policy-upload">
+            <div class="policy-upload-head">
+              <span class="choice-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 16 16"><path d="M4 1.8h5.2L13 5.4V14H4z" fill="none" stroke="#5653fa" stroke-width="1.3"/><path d="M9.2 1.8V5.4H13" fill="none" stroke="#5653fa" stroke-width="1.3"/></svg></span>
+              <div>
+                <h2 id="policy-form-title">Upload a company policy</h2>
+                <p class="quiet" id="policy-form-help">PDF or DOCX. Nothing is stored until you upload it.</p>
+              </div>
+            </div>
+            <p class="note hidden" id="policy-warning">Uploading a new policy deletes the current one.</p>
+            <label class="field policy-file" id="policy-file-row">
+              <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5l3 3V13.5H4z" fill="none" stroke="#5653fa" stroke-width="1.2"/><path d="M9 2.5V5.5h3" fill="none" stroke="#5653fa" stroke-width="1.2"/></svg>
+              <span id="policy-file-name">Choose a PDF or DOCX</span>
+              <input id="policy-file" class="sr" name="files" type="file" accept="application/pdf,.pdf,.docx" required>
+            </label>
+            <button class="primary" id="policy-submit" type="submit" disabled>Upload policy</button>
+            <p class="quiet hidden" id="policy-progress">Storing the policy. Keep this tab open.</p>
+          </form>
+        </section>
+        <section id="profile-view" class="policy-page hidden">
+          <header class="profile-head">
+            <span class="bldg vendor-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4.5" y="3" width="15" height="18" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="7.4" y="6" width="2.3" height="2.3" fill="currentColor"/><rect x="14.3" y="6" width="2.3" height="2.3" fill="currentColor"/><rect x="7.4" y="10.2" width="2.3" height="2.3" fill="currentColor"/><rect x="14.3" y="10.2" width="2.3" height="2.3" fill="currentColor"/><rect x="7.4" y="14.4" width="2.3" height="2.3" fill="currentColor"/><rect x="14.3" y="14.4" width="2.3" height="2.3" fill="currentColor"/></svg></span>
+            <div>
+              <h1>Company profile</h1>
+              <p class="quiet">Registration details stay as entered. Only the sign-in email and password can be changed.</p>
+            </div>
+          </header>
+          <article class="policy-card">
+            <dl class="profile-fixed">
+              <div><dt>Company name</dt><dd id="profile-name"></dd></div>
+              <div><dt>Industry</dt><dd id="profile-industry"></dd></div>
+              <div><dt>Company size</dt><dd id="profile-size"></dd></div>
+              <div><dt>Headquarters</dt><dd id="profile-headquarters"></dd></div>
+              <div><dt>Website</dt><dd id="profile-website"></dd></div>
+            </dl>
+          </article>
+          <form id="profile-form" class="policy-card">
+            <h2>Sign-in</h2>
+            <label>Business email
+              <input name="business_email" type="text" autocomplete="username" required>
+            </label>
+            <p class="quiet">Used to sign in.</p>
+            <label>Current password
+              <input name="current_password" type="password" autocomplete="current-password" required>
+            </label>
+            <label>New password
+              <input name="new_password" type="password" minlength="8" autocomplete="new-password" placeholder="Leave blank to keep the current password">
+            </label>
+            <button class="primary" type="submit">Save</button>
+            <p id="profile-message" class="error" role="status"></p>
+          </form>
+        </section>
+        <section id="vendor-view" class="hidden">
+          <div class="vendor-heading" id="vendor-heading">
+            <button class="back-link" type="button" id="back-policy" aria-label="Company policy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <span class="bldg vendor-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4.5" y="3" width="15" height="18" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="7.4" y="6" width="2.3" height="2.3" fill="currentColor"/><rect x="14.3" y="6" width="2.3" height="2.3" fill="currentColor"/><rect x="7.4" y="10.2" width="2.3" height="2.3" fill="currentColor"/><rect x="14.3" y="10.2" width="2.3" height="2.3" fill="currentColor"/><rect x="7.4" y="14.4" width="2.3" height="2.3" fill="currentColor"/><rect x="14.3" y="14.4" width="2.3" height="2.3" fill="currentColor"/></svg></span>
+            <h1 id="vendor-title">Vendor</h1>
+            <div class="heading-tools">
+              <button class="tool tip hidden" type="button" id="download-report" data-tip="Download the report as a PDF" aria-label="Download the report as a PDF"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10M8 10l4 4 4-4M5 19h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button class="delete-report tip hidden" type="button" id="delete-report-top" data-tip="Delete report" aria-label="Delete report"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V5h6v2M8 7l.7 12h6.6L16 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              <button class="hidden" id="check-another" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 01-13.7 5.6M4 12a8 8 0 0113.7-5.6M20 4v5h-5M4 20v-5h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg> Check another</button>
+            </div>
+          </div>
+          <div id="chooser" class="hero vendor-hero">
+            <svg class="scene-art" aria-hidden="true"><use href="#doc-shield"></use></svg>
+            <h1>Welcome to <span class="brand-name">Clause<span>Intel</span></span>!</h1>
+            <p class="quiet">Your AI-powered contract and policy compliance checker</p>
+            <div class="choice-grid">
+              <form id="contract-form" class="choice">
+                <div class="choice-top">
+                  <span class="choice-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 16 16"><path d="M8 1.5l5 2v4.2c0 3-2.1 4.8-5 6.3-2.9-1.5-5-3.3-5-6.3V3.5l5-2z" fill="none" stroke="#5653fa" stroke-width="1.3"/></svg></span>
+                  <div>
+                    <h2>Upload Contract</h2>
+                    <p class="quiet">PDF, DOCX files are supported</p>
+                  </div>
+                  <svg class="choice-watermark" width="34" height="34" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#9aa3c7" stroke-width="1"/><path d="M9.5 1.5V4.5h3M5.5 7.5h5M5.5 10h4" fill="none" stroke="#9aa3c7" stroke-width="1" stroke-linecap="round"/></svg>
+                </div>
+                <input id="contract-file" class="sr" name="contract" type="file" accept="application/pdf,.pdf,.docx">
+                <button class="choice-btn solid" type="button" id="welcome-upload"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.5V3.5M5.5 6L8 3.5 10.5 6M3.5 12.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Upload Contract</button>
+              </form>
+              <article class="choice">
+                <div class="choice-top">
+                  <span class="choice-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 16 16"><path d="M3 3.5h10v7H6.2L3.5 13V3.5z" fill="none" stroke="#5653fa" stroke-width="1.3" stroke-linejoin="round"/><path d="M6 6.5h4M6 8.5h2.5" stroke="#5653fa" stroke-width="1.2" stroke-linecap="round"/></svg></span>
+                  <div>
+                    <h2>Add Single Clause</h2>
+                    <p class="quiet">Ask about a specific clause</p>
+                  </div>
+                  <svg class="choice-watermark" width="34" height="34" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h11v8H6l-3.5 3V2.5z" fill="none" stroke="#9aa3c7" stroke-width="1" stroke-linejoin="round"/></svg>
+                </div>
+                <button class="choice-btn soft" type="button" id="open-clause">Type Clause →</button>
+              </article>
+            </div>
+            <p class="note hidden" id="replace-note">A new contract or clause removes this report after the new one is ready. Download the report first.</p>
+            <div id="previous-report"></div>
+          </div>
+          <div id="analyzing" class="hero hidden">
+            <div class="spinner" aria-hidden="true"></div>
+            <div class="complete-mark" aria-hidden="true">
+              <span class="halo"></span>
+              <svg class="orbit" viewBox="0 0 72 72"><circle cx="36" cy="36" r="30" fill="none" stroke="#178a4a" stroke-width="3" stroke-dasharray="12 8" stroke-linecap="round"/></svg>
+              <svg class="tick" viewBox="0 0 72 72"><circle cx="36" cy="36" r="22" fill="#e8f8ee"/><path d="M26 37.5l7 7 14-15" fill="none" stroke="#178a4a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <h2>Analyzing your contract</h2>
+            <p id="analyzing-help">This can take a few minutes. Keep this tab open.</p>
+            <ol id="job-steps" class="steps hidden">
+              <li data-step="extracting"><span class="dot" aria-hidden="true"></span> Extracting</li>
+              <li class="arrow" aria-hidden="true"></li>
+              <li data-step="analysing"><span class="dot" aria-hidden="true"></span> Analysing</li>
+              <li class="arrow" aria-hidden="true"></li>
+              <li data-step="matching"><span class="dot" aria-hidden="true"></span> Matching</li>
+              <li class="arrow" aria-hidden="true"></li>
+              <li data-step="completed"><span class="dot" aria-hidden="true"></span> Completed</li>
+            </ol>
+          </div>
+          <div id="report"></div>
+        </section>
+      </div>
+    </div>
+  </div>
 
-  <section id="signed-in" class="hidden">
-    <p>Signed in as <strong id="company-name"></strong>.</p>
-    <button id="logout" type="button">Log out</button>
-    <h2>Upload a company policy</h2>
-    <form id="policy-form">
-      <label>PDF <input name="files" type="file" accept="application/pdf,.pdf" required></label>
-      <button type="submit">Store policy</button>
+  <dialog id="vendor-dialog">
+    <form id="vendor-form" method="dialog">
+      <div class="dialog-top">
+        <h2>Add Vendor</h2>
+        <button class="dialog-x" type="button" id="close-vendor" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4L4 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      </div>
+      <label>Vendor name <input name="name" required autocomplete="organization"></label>
+      <button class="primary" type="submit">Create vendor</button>
     </form>
-    <h2>Check a vendor contract</h2>
-    <form id="contract-form">
-      <label>PDF <input name="contract" type="file" accept="application/pdf,.pdf" required></label>
-      <button type="submit">Check contract</button>
+  </dialog>
+  <dialog id="clause-dialog">
+    <form id="clause-form">
+      <div class="dialog-top">
+        <h2>Add Single Clause</h2>
+        <button class="dialog-x" type="button" id="close-clause" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4L4 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      </div>
+      <p class="quiet">Write a heading and the clause text, then send it to be checked.</p>
+      <label>Heading
+        <input name="clause_type" required maxlength="255" autocomplete="off" placeholder="Heading" aria-describedby="heading-count-line">
+      </label>
+      <p class="count-line" id="heading-count-line"><span id="heading-count">0</span> / 255</p>
+      <label>Clause text
+        <textarea name="clause_text" required maxlength="10000" placeholder="Clause text" aria-describedby="text-count-line"></textarea>
+      </label>
+      <p class="count-line" id="text-count-line"><span id="text-count">0</span> / 10000</p>
+      <button class="primary" type="submit">Send clause</button>
     </form>
-    <div id="report"></div>
-  </section>
-  <p id="message" class="error" role="status"></p>
+  </dialog>
+  <dialog id="confirm-dialog">
+    <form id="confirm-form">
+      <div class="dialog-top">
+        <h2 id="confirm-title">Delete</h2>
+        <button class="dialog-x" type="button" id="close-confirm" aria-label="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4L4 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      </div>
+      <p id="confirm-text" class="quiet"></p>
+      <button class="primary" type="submit" id="confirm-yes">Delete</button>
+    </form>
+  </dialog>
+  <div id="toasts" aria-live="polite"></div>
 
   <script>
     const message = document.querySelector("#message");
     const signedOut = document.querySelector("#signed-out");
     const signedIn = document.querySelector("#signed-in");
+    let vendors = [];
+    let selectedId = sessionStorage.getItem("vendor_id") || "";
+    let replacing = false;
+    let vendorWatch = 0;
+    let policyFileName = "policy";
 
-    function showError(error) {
-      message.textContent = error && error.message ? error.message : String(error || "");
+    function notify(text, kind) {
+      const line = String(text || "").trim();
+      if (!line) return;
+      const card = document.createElement("div");
+      card.className = "toast " + (kind === "ok" ? "ok" : "bad");
+      card.textContent = line;
+      document.querySelector("#toasts").append(card);
+      setTimeout(() => card.remove(), 6000);
+    }
+
+    function showError() {
+      notify("We encountered an error.", "bad");
     }
 
     function authHeader() {
       return { Authorization: "Bearer " + sessionStorage.getItem("token") };
     }
 
-    function showSession() {
+    function expireSession() {
+      sessionStorage.clear();
+      selectedId = "";
+      vendors = [];
+      replacing = false;
+      document.querySelector("#register-panel").classList.add("hidden");
+      document.querySelector("#login-panel").classList.remove("hidden");
+      document.querySelector("#login-expired").textContent = "Your session has ended. Sign in again.";
+      showSession();
+    }
+
+    async function authed(url, options) {
+      const response = await fetch(url, options || {});
+      const headers = (options && options.headers) || {};
+      if (response.status === 401 && (headers.Authorization || headers.authorization)) {
+        expireSession();
+        throw new Error("Your session has ended. Sign in again.");
+      }
+      return response;
+    }
+
+    function tokenExpiry(token) {
+      try {
+        const part = token.split(".")[1];
+        const body = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/")));
+        return typeof body.exp === "number" ? body.exp * 1000 : 0;
+      } catch (error) {
+        return 0;
+      }
+    }
+
+    async function showSession() {
       const token = sessionStorage.getItem("token");
+      if (token && tokenExpiry(token) <= Date.now()) {
+        expireSession();
+        return;
+      }
       signedOut.classList.toggle("hidden", Boolean(token));
       signedIn.classList.toggle("hidden", !token);
-      document.querySelector("#company-name").textContent = sessionStorage.getItem("org_id") || "";
+      const name = sessionStorage.getItem("company_name") || sessionStorage.getItem("org_id") || "";
+      document.querySelector("#company-name").textContent = name;
+      document.querySelector("#avatar").textContent = (name.trim()[0] || "?").toUpperCase();
+      if (token) {
+        await loadVendors();
+        const view = sessionStorage.getItem("open_view") || "policy";
+        const saved = sessionStorage.getItem("vendor_id") || "";
+        const vendor = vendors.find((item) => item.vendor_id === saved);
+        if (view === "vendor" && vendor) showVendor(vendor);
+        else if (view === "profile") showProfile();
+        else showPolicy();
+      } else {
+        document.querySelector("#vendors").replaceChildren();
+      }
+    }
+
+    const appShell = document.querySelector("#signed-in");
+    const sidebar = document.querySelector("#sidebar");
+    const menuButton = document.querySelector("#open-menu");
+    const scrim = document.querySelector("#scrim");
+    const wideQuery = window.matchMedia("(min-width: 1025px)");
+
+    function wideScreen() { return wideQuery.matches; }
+
+    function sidebarOpen() {
+      if (wideScreen()) return !appShell.classList.contains("sidebar-closed");
+      return sidebar.classList.contains("open");
+    }
+
+    function paintSidebarButton() {
+      const open = sidebarOpen();
+      menuButton.classList.toggle("is-open", open);
+      menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+      menuButton.setAttribute("aria-label", open ? "Close sidebar" : "Open sidebar");
+      document.body.classList.toggle("nav-open", wideScreen() && open);
+      document.body.classList.toggle("nav-rail", wideScreen() && !open);
+    }
+
+    function setSidebar(open) {
+      if (wideScreen()) {
+        appShell.classList.toggle("sidebar-closed", !open);
+        sidebar.classList.remove("open");
+        scrim.classList.remove("show");
+      } else {
+        appShell.classList.remove("sidebar-closed");
+        sidebar.classList.toggle("open", open);
+        scrim.classList.toggle("show", open);
+      }
+      paintSidebarButton();
+    }
+
+    function closeDrawer() {
+      if (wideScreen()) return;
+      sidebar.classList.remove("open");
+      scrim.classList.remove("show");
+      paintSidebarButton();
+    }
+
+    function hideReportTools() {
+      document.querySelector("#download-report").classList.add("hidden");
+      document.querySelector("#delete-report-top").classList.add("hidden");
+    }
+
+    function rememberView(name) {
+      sessionStorage.setItem("open_view", name);
+    }
+
+    function showPolicy() {
+      rememberView("policy");
+      closeDrawer();
+      hideReportTools();
+      document.querySelector("#policy-view").classList.remove("hidden");
+      document.querySelector("#vendor-view").classList.add("hidden");
+      document.querySelector("#profile-view").classList.add("hidden");
+      document.querySelector("#open-policy").setAttribute("aria-current", "page");
+      document.querySelectorAll(".vendor-btn").forEach((button) => button.removeAttribute("aria-current"));
+      loadPolicy();
+    }
+
+    function reportFile(vendor) {
+      const line = document.createElement("div");
+      line.className = "report-file";
+      const mark = document.createElement("span");
+      mark.className = "report-mark";
+      mark.setAttribute("aria-hidden", "true");
+      mark.innerHTML = "<svg viewBox=\"0 0 24 24\"><path d=\"M7 3.5h7.2L19 8.2V20a1.5 1.5 0 01-1.5 1.5h-10A1.5 1.5 0 016 20V5A1.5 1.5 0 017.5 3.5z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\"/><path d=\"M14 3.5V8.2H19M9 12.2h6M9 15.8h4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\"/></svg>";
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "report-name";
+      open.textContent = vendor.filename || vendor.name;
+      open.addEventListener("click", () => askForJob(vendor.job_id).catch(showError));
+      line.append(mark, open);
+      const when = reportWhen(vendor.updated_at);
+      if (when) {
+        const time = document.createElement("time");
+        time.className = "report-when";
+        time.dateTime = vendor.updated_at;
+        time.textContent = when;
+        line.append(time);
+      }
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "delete-report";
+      remove.setAttribute("aria-label", "Delete report");
+      remove.innerHTML = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 7h14M9 7V5h6v2M8 7l.7 12h6.6L16 7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>";
+      remove.addEventListener("click", () => askConfirm(
+        "Delete report",
+        "Delete this report?",
+        () => deleteReport(vendor.vendor_id),
+      ));
+      line.append(remove);
+      return line;
+    }
+
+    function reportWhen(value) {
+      const parsed = Date.parse(value || "");
+      if (!Number.isFinite(parsed)) return "";
+      return new Date(parsed).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    }
+
+    let confirmAction = null;
+
+    function askConfirm(title, text, action) {
+      document.querySelector("#confirm-title").textContent = title;
+      document.querySelector("#confirm-text").textContent = text;
+      confirmAction = action;
+      document.querySelector("#confirm-dialog").showModal();
+    }
+
+    async function deleteVendor(vendorId) {
+      const response = await authed("/v1/vendors/" + encodeURIComponent(vendorId), {
+        method: "DELETE",
+        headers: authHeader(),
+      });
+      if (!response.ok) await readError(response);
+      document.querySelector("#confirm-dialog").close();
+      notify("Deleted.", "ok");
+      if (selectedId === vendorId) {
+        selectedId = "";
+        sessionStorage.removeItem("vendor_id");
+        showPolicy();
+      }
+      await loadVendors();
+    }
+
+    async function deleteReport(vendorId) {
+      const response = await authed("/v1/vendors/" + encodeURIComponent(vendorId) + "/report", {
+        method: "DELETE",
+        headers: authHeader(),
+      });
+      if (!response.ok) await readError(response);
+      document.querySelector("#confirm-dialog").close();
+      notify("Deleted.", "ok");
+      replacing = false;
+      await loadVendors();
+      const vendor = vendors.find((item) => item.vendor_id === vendorId);
+      if (vendor) showVendor(vendor);
+    }
+
+    function liveJob(vendor) {
+      if (vendor.pending_status === "queued" || vendor.pending_status === "running") return vendor.pending_job_id;
+      if (vendor.status === "queued" || vendor.status === "running") return vendor.job_id;
+      return "";
+    }
+
+    function showVendor(vendor) {
+      const ticket = ++vendorWatch;
+      rememberView("vendor");
+      closeDrawer();
+      selectedId = vendor.vendor_id;
+      sessionStorage.setItem("vendor_id", selectedId);
+      document.querySelector("#policy-view").classList.add("hidden");
+      document.querySelector("#vendor-view").classList.remove("hidden");
+      document.querySelector("#profile-view").classList.add("hidden");
+      document.querySelector("#open-policy").removeAttribute("aria-current");
+      document.querySelector("#vendor-title").textContent = vendor.name;
+      const hasReport = vendor.status === "succeeded" && vendor.job_id;
+      const showChoices = !hasReport || replacing;
+      document.querySelector("#chooser").classList.toggle("hidden", !showChoices);
+      document.querySelector("#vendor-heading").classList.remove("hidden");
+      const panel = document.querySelector("#analyzing");
+      panel.classList.remove("complete", "leaving");
+      panel.classList.add("hidden");
+      hideReportTools();
+      document.querySelector("#check-another").classList.add("hidden");
+      document.querySelector("#replace-note").classList.toggle("hidden", !replacing);
+      const previous = document.querySelector("#previous-report");
+      previous.replaceChildren();
+      if (showChoices && hasReport) previous.append(reportFile(vendor));
+      document.querySelectorAll(".vendor-btn").forEach((button) => {
+        if (button.dataset.id === vendor.vendor_id) button.setAttribute("aria-current", "true");
+        else button.removeAttribute("aria-current");
+      });
+      const runningId = liveJob(vendor);
+      if (runningId && !replacing) {
+        document.querySelector("#chooser").classList.add("hidden");
+        document.querySelector("#report").replaceChildren();
+        const title = vendor.input_mode === "clause" ? "Analyzing your clause" : "Analyzing your contract";
+        waitForJob(runningId, title, ticket)
+          .then((job) => {
+            if (!job || ticket !== vendorWatch) return null;
+            return playComplete(() => {
+              if (ticket === vendorWatch) showFinishedJob(job);
+            });
+          })
+          .then(() => {
+            if (ticket === vendorWatch) return loadVendors();
+          })
+          .catch((error) => {
+            if (ticket !== vendorWatch) return;
+            showError(error);
+            const panel = document.querySelector("#analyzing");
+            panel.classList.remove("complete", "leaving");
+            panel.classList.add("hidden");
+            document.querySelector("#vendor-heading").classList.remove("hidden");
+            document.querySelector("#chooser").classList.remove("hidden");
+          });
+        return;
+      }
+      if (hasReport && !replacing) askForJob(vendor.job_id, { ticket }).catch((error) => {
+        if (ticket === vendorWatch) showError(error);
+      });
+      else document.querySelector("#report").replaceChildren();
+    }
+
+    function resetPolicyPicker() {
+      const input = document.querySelector("#policy-file");
+      input.value = "";
+      document.querySelector("#policy-file-name").textContent = "Choose a PDF or DOCX";
+      document.querySelector("#policy-file-row").classList.remove("has-file");
+      document.querySelector("#policy-submit").disabled = true;
+    }
+
+    async function loadPolicy() {
+      const response = await authed("/v1/policies/current", { headers: authHeader() });
+      if (!response.ok) return;
+      const body = await response.json();
+      const file = body.file;
+      const current = document.querySelector("#policy-current");
+      policyFileName = file && file.filename ? file.filename : "policy";
+      current.classList.toggle("hidden", !file);
+      document.querySelector("#policy-warning").classList.toggle("hidden", !file);
+      document.querySelector("#policy-form-title").textContent = file ? "Replace the current policy" : "Upload a company policy";
+      document.querySelector("#policy-form-help").textContent = file
+        ? "PDF or DOCX."
+        : "PDF or DOCX. Nothing is stored until you upload it.";
+      document.querySelector("#preview-note").classList.add("hidden");
+      closePolicyPreview();
+      if (file) document.querySelector("#policy-filename").textContent = file.filename || "Policy";
+      const pending = document.querySelector("#policy-pending");
+      if (file && body.pending_status) {
+        pending.textContent = "A new policy is " + body.pending_status + ". This file stays until that finishes.";
+        pending.classList.remove("hidden");
+      } else {
+        pending.textContent = "";
+        pending.classList.add("hidden");
+      }
+    }
+
+    let policyPreviewUrls = [];
+    let previewWords = [];
+    let previewHits = [];
+    let previewHit = 0;
+    let previewZoom = 1;
+    let previewPaging = false;
+
+    function previewScroller() {
+      return document.querySelector("#policy-preview .policy-pages");
+    }
+
+    function closePolicyPreview() {
+      const panel = document.querySelector("#policy-preview");
+      previewScroller().replaceChildren();
+      panel.classList.add("hidden");
+      document.querySelector("#preview-policy").setAttribute("aria-expanded", "false");
+      policyPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+      policyPreviewUrls = [];
+      previewWords = [];
+      previewHits = [];
+      previewHit = 0;
+      previewZoom = 1;
+      document.querySelector("#policy-find").value = "";
+      document.querySelector("#policy-find-count").textContent = "";
+      document.querySelector("#policy-page").value = "1";
+      document.querySelector("#policy-page-total").textContent = "/ 1";
+      document.querySelector("#policy-zoom").textContent = "100%";
+    }
+
+    function visiblePreviewPage() {
+      const scroller = previewScroller();
+      let page = 1;
+      scroller.querySelectorAll("figure").forEach((sheet) => {
+        if (sheet.offsetTop <= scroller.scrollTop + 8) page = Number(sheet.dataset.page);
+      });
+      return page;
+    }
+
+    function showPreviewPage(page) {
+      const scroller = previewScroller();
+      const sheet = scroller.querySelector('figure[data-page="' + page + '"]');
+      if (!sheet) return;
+      previewPaging = true;
+      scroller.scrollTo({ top: sheet.offsetTop, behavior: "smooth" });
+      document.querySelector("#policy-page").value = String(page);
+      setTimeout(() => { previewPaging = false; }, 450);
+    }
+
+    function findPreviewHits(query) {
+      const needle = query.trim().toLowerCase();
+      if (!needle) return [];
+      const lines = new Map();
+      previewWords.forEach((word) => {
+        const key = word.page + ":" + word.line;
+        if (!lines.has(key)) lines.set(key, []);
+        lines.get(key).push(word);
+      });
+      const found = [];
+      lines.forEach((lineWords) => {
+        lineWords.sort((a, b) => a.x - b.x);
+        if (!needle.includes(" ")) {
+          lineWords.forEach((word) => {
+            if (word.t.toLowerCase().includes(needle)) found.push([word]);
+          });
+          return;
+        }
+        const text = lineWords.map((word) => word.t).join(" ").toLowerCase();
+        const parts = [];
+        let cursor = 0;
+        lineWords.forEach((word) => {
+          parts.push({ word, start: cursor, end: cursor + word.t.length });
+          cursor += word.t.length + 1;
+        });
+        let from = 0;
+        while (from < text.length) {
+          const at = text.indexOf(needle, from);
+          if (at < 0) break;
+          const end = at + needle.length;
+          const hit = parts.filter((part) => part.end > at && part.start < end).map((part) => part.word);
+          if (hit.length) found.push(hit);
+          from = at + Math.max(needle.length, 1);
+        }
+      });
+      found.sort((a, b) => a[0].page - b[0].page || a[0].y - b[0].y || a[0].x - b[0].x);
+      return found;
+    }
+
+    function paintPreviewHits() {
+      document.querySelectorAll("#policy-preview .policy-hit").forEach((mark) => mark.remove());
+      previewHits.forEach((group, index) => {
+        group.forEach((word) => {
+          const sheet = previewScroller().querySelector('figure[data-page="' + word.page + '"]');
+          if (!sheet) return;
+          const mark = document.createElement("span");
+          mark.className = "policy-hit" + (index === previewHit ? " now" : "");
+          mark.style.left = (word.x * 100) + "%";
+          mark.style.top = (word.y * 100) + "%";
+          mark.style.width = (word.w * 100) + "%";
+          mark.style.height = (word.h * 100) + "%";
+          sheet.append(mark);
+        });
+      });
+      const query = document.querySelector("#policy-find").value.trim();
+      const count = document.querySelector("#policy-find-count");
+      if (!query) count.textContent = "";
+      else if (!previewHits.length) count.textContent = "No matches";
+      else count.textContent = (previewHit + 1) + " of " + previewHits.length;
+    }
+
+    function goToPreviewHit(index) {
+      if (!previewHits.length) return;
+      previewHit = (index + previewHits.length) % previewHits.length;
+      paintPreviewHits();
+      showPreviewPage(previewHits[previewHit][0].page);
+    }
+
+    function setPreviewZoom(next) {
+      previewZoom = Math.min(2, Math.max(0.8, next));
+      previewScroller().style.setProperty("--zoom", String(previewZoom));
+      document.querySelector("#policy-zoom").textContent = Math.round(previewZoom * 100) + "%";
+    }
+
+    async function previewPolicy() {
+      const note = document.querySelector("#preview-note");
+      const panel = document.querySelector("#policy-preview");
+      const name = policyFileName || "";
+      if (!panel.classList.contains("hidden")) {
+        closePolicyPreview();
+        note.classList.add("hidden");
+        return;
+      }
+      if (!name.toLowerCase().endsWith(".pdf")) {
+        closePolicyPreview();
+        note.textContent = "A Word file cannot be shown on this page. Download it.";
+        note.classList.remove("hidden");
+        return;
+      }
+      note.classList.add("hidden");
+      const info = await authed("/v1/policies/preview", { headers: authHeader() });
+      if (!info.ok) await readError(info);
+      const body = await info.json();
+      const count = body.pages || 0;
+      if (!count) {
+        note.textContent = "This file cannot be shown on this page. Download it.";
+        note.classList.remove("hidden");
+        return;
+      }
+      const pages = previewScroller();
+      pages.replaceChildren();
+      previewWords = body.words || [];
+      document.querySelector("#policy-preview-name").textContent = body.filename || name;
+      document.querySelector("#policy-page").max = String(count);
+      document.querySelector("#policy-page").value = "1";
+      document.querySelector("#policy-page-total").textContent = "/ " + count;
+      setPreviewZoom(1);
+      panel.classList.remove("hidden");
+      document.querySelector("#preview-policy").setAttribute("aria-expanded", "true");
+      for (let page = 1; page <= count; page += 1) {
+        const response = await authed("/v1/policies/preview/" + page, { headers: authHeader() });
+        if (!response.ok) await readError(response);
+        const url = URL.createObjectURL(await response.blob());
+        policyPreviewUrls.push(url);
+        const sheet = document.createElement("figure");
+        sheet.dataset.page = String(page);
+        const image = document.createElement("img");
+        image.alt = "Page " + page + " of " + (body.filename || name);
+        image.src = url;
+        sheet.append(image);
+        pages.append(sheet);
+      }
+    }
+
+    async function downloadPolicy() {
+      const response = await authed("/v1/policies/file", { headers: authHeader() });
+      if (!response.ok) { await readError(response); }
+      const blob = await response.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = policyFileName || "policy";
+      link.click();
+    }
+
+    async function loadVendors() {
+      const root = document.querySelector("#vendors");
+      const response = await authed("/v1/vendors", { headers: authHeader() });
+      if (!response.ok) return;
+      const body = await response.json();
+      vendors = body.vendors || [];
+      root.replaceChildren();
+      vendors.forEach((vendor) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "vendor-btn";
+        button.dataset.id = vendor.vendor_id;
+        button.dataset.name = vendor.name;
+        button.textContent = vendor.name;
+        const vendorOpen = !document.querySelector("#vendor-view").classList.contains("hidden");
+        if (vendorOpen && vendor.vendor_id === selectedId) button.setAttribute("aria-current", "true");
+        button.insertAdjacentHTML("afterbegin", "<span class=\"bldg\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><rect x=\"4.5\" y=\"3\" width=\"15\" height=\"18\" rx=\"1.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\"/><rect x=\"7.4\" y=\"6\" width=\"2.3\" height=\"2.3\" fill=\"currentColor\"/><rect x=\"14.3\" y=\"6\" width=\"2.3\" height=\"2.3\" fill=\"currentColor\"/><rect x=\"7.4\" y=\"10.2\" width=\"2.3\" height=\"2.3\" fill=\"currentColor\"/><rect x=\"14.3\" y=\"10.2\" width=\"2.3\" height=\"2.3\" fill=\"currentColor\"/><rect x=\"7.4\" y=\"14.4\" width=\"2.3\" height=\"2.3\" fill=\"currentColor\"/><rect x=\"14.3\" y=\"14.4\" width=\"2.3\" height=\"2.3\" fill=\"currentColor\"/></svg></span>");
+        button.addEventListener("click", () => { replacing = false; showVendor(vendor); });
+        const line = document.createElement("div");
+        line.className = "vendor-line";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "vendor-remove";
+        remove.setAttribute("aria-label", "Delete " + vendor.name);
+        remove.innerHTML = "<svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M3.5 4.5h9M6 4.5V3.2h4v1.3M4.5 4.5l.6 8.2h5.8l.6-8.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\"/></svg>";
+        remove.addEventListener("click", () => askConfirm(
+          "Delete vendor",
+          "Delete " + vendor.name + "?",
+          () => deleteVendor(vendor.vendor_id),
+        ));
+        line.append(button, remove);
+        root.append(line);
+      });
+      applyVendorFilter();
+    }
+
+    function applyVendorFilter() {
+      const query = (document.querySelector("#vendor-query").value || "").trim().toLowerCase();
+      let shown = 0;
+      document.querySelectorAll("#vendors .vendor-btn").forEach((button) => {
+        const match = !query || (button.dataset.name || "").toLowerCase().includes(query);
+        button.classList.toggle("hidden", !match);
+        if (match) shown += 1;
+      });
+      document.querySelector("#vendor-empty").classList.toggle("hidden", !query || shown > 0);
     }
 
     async function readError(response) {
@@ -85,112 +1749,769 @@
       const body = await response.json();
       sessionStorage.setItem("token", body.token);
       sessionStorage.setItem("org_id", body.org_id);
-      message.textContent = "";
+      sessionStorage.setItem("company_name", body.name || body.org_id || "");
+      replacing = false;
       showSession();
     }
 
-    function finding(item) {
+    function rememberJob(jobId) { return jobId; }
+
+    function repeatsReview(reason, reviewReason) {
+      if (!reviewReason || !reason) return false;
+      return reason.startsWith("The checked internal policy contains no applicable rule for this clause.")
+        || reason.startsWith("Internal policy evidence could not be retrieved or inspected.")
+        || reason.startsWith("Reranker confidence");
+    }
+
+    function contractText(item) {
+      const raw = (item.clause_text || "").trim();
+      if (!raw) return "";
+      const title = (item.clause_title || "").trim();
+      const lines = raw.split(/\r?\n/);
+      const first = lines[0].trim().replace(/^\d+(?:\.\d+)*\.?\s+/, "");
+      if (title && first.toLowerCase() === title.toLowerCase()) {
+        return lines.slice(1).join("\n").trim();
+      }
+      return raw;
+    }
+
+    function findingTone(label) {
+      const text = label || "";
+      if (text === "Matches the policy") return ["ok", "✓"];
+      if (text === "Not in the contract" || text === "Only partly in the contract") return ["missing", "–"];
+      if (text === "Needs a person to review") return ["review", "!"];
+      return ["bad", "✕"];
+    }
+
+    function findingGroup(label) {
+      if (label === "Matches the policy") return "compliant";
+      if (label === "Not in the contract") return "missing";
+      if (label === "Needs a person to review") return "review";
+      return "bad";
+    }
+
+    function finding(item, bucket) {
       const block = document.createElement("article");
+      const label = item.reader_label || "Needs a person to review";
+      const tone = findingTone(label);
+      block.className = "finding " + tone[0];
+      block.dataset.group = findingGroup(label);
+      block.dataset.bucket = bucket || "present";
+      const symbol = document.createElement("span");
+      symbol.className = "symbol";
+      symbol.textContent = tone[1];
+      const body = document.createElement("div");
+      body.className = "body";
       const title = document.createElement("h3");
       title.textContent = item.clause_title || item.clause_type || "Clause";
       const status = document.createElement("p");
-      status.textContent = "Status: " + (item.compliance_status || (item.compliant ? "compliant" : "non_compliant"));
-      const reason = document.createElement("p");
-      reason.textContent = item.reason || "";
-      block.append(title, status, reason);
+      status.className = "label";
+      status.textContent = label;
+      body.append(title, status);
+      block.append(symbol, body);
+      const contractSentence = contractText(item);
+      if (contractSentence) {
+        const contract = document.createElement("p");
+        contract.className = "line";
+        contract.textContent = "Contract text: " + contractSentence;
+        body.append(contract);
+      }
+      if (item.reason && !repeatsReview(item.reason, item.review_reason)) {
+        const reason = document.createElement("p");
+        reason.className = "line";
+        reason.textContent = item.reason;
+        body.append(reason);
+      }
+      if (item.needs_review && item.review_reason) {
+        const why = document.createElement("p");
+        why.className = "line";
+        why.textContent = item.review_reason;
+        body.append(why);
+      }
       if (item.exact_policy_quote) {
         const quote = document.createElement("p");
+        quote.className = "line quote";
         quote.textContent = "Policy quote: " + item.exact_policy_quote;
-        block.append(quote);
+        body.append(quote);
+      }
+      (item.clauses_internal || []).forEach((place) => {
+        const where = document.createElement("p");
+        where.className = "line place";
+        where.textContent = "Policy: " + place;
+        body.append(where);
+      });
+      if (item.suggested_revision) {
+        const rewrite = document.createElement("p");
+        rewrite.className = "line suggestion";
+        rewrite.textContent = "Suggested revision: " + item.suggested_revision;
+        body.append(rewrite);
       }
       return block;
     }
 
-    function sleep(ms) {
-      return new Promise((resolve) => setTimeout(resolve, ms));
+    function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+    const contractSteps = ["extracting", "analysing", "matching", "completed"];
+    let furthestStep = -1;
+
+    function showJobSteps(step) {
+      const list = document.querySelector("#job-steps");
+      const current = contractSteps.indexOf(step || "");
+      if (current >= 0 && step !== "completed") furthestStep = Math.max(furthestStep, current);
+      list.classList.remove("hidden");
+      list.querySelectorAll("li[data-step]").forEach((item) => {
+        const index = contractSteps.indexOf(item.dataset.step);
+        const done = step === "completed" ? index <= furthestStep : index < current;
+        item.classList.toggle("done", done);
+        item.classList.toggle("now", index === current);
+      });
     }
 
-    async function waitForJob(jobId) {
+    async function pollJob(jobId, onUpdate) {
+      rememberJob(jobId);
       for (let attempt = 0; attempt < 150; attempt += 1) {
-        const response = await fetch("/v1/jobs/" + jobId, { headers: authHeader() });
+        const response = await authed("/v1/jobs/" + encodeURIComponent(jobId), { headers: authHeader() });
         if (!response.ok) await readError(response);
         const job = await response.json();
+        if (onUpdate) onUpdate(job);
         if (job.status === "succeeded") return job;
-        if (job.status === "failed") throw new Error(job.error || "The job failed");
-        message.textContent = "Job " + jobId + " is " + job.status + ".";
+        if (job.status === "failed") throw new Error(job.error || "The check failed");
         await sleep(2000);
       }
-      throw new Error("Job " + jobId + " is still running. Open this page again and ask for that job.");
+      throw new Error("The check is still running. Keep this tab open.");
     }
 
-    function showReport(report) {
+    async function waitForJob(jobId, title, ticket) {
+      if (ticket !== undefined && ticket !== vendorWatch) return null;
+      const panel = document.querySelector("#analyzing");
+      panel.classList.remove("complete", "leaving", "hidden");
+      document.querySelector("#analyzing h2").textContent = title || "Analyzing your contract";
+      document.querySelector("#analyzing-help").classList.remove("hidden");
+      document.querySelector("#chooser").classList.add("hidden");
+      document.querySelector("#vendor-heading").classList.add("hidden");
+      furthestStep = -1;
+      showJobSteps("");
+      return pollJob(jobId, (job) => showJobSteps(job.step));
+    }
+
+    async function playComplete(reveal) {
+      const panel = document.querySelector("#analyzing");
+      const help = document.querySelector("#analyzing-help");
+      panel.classList.remove("hidden", "leaving");
+      panel.classList.add("complete");
+      document.querySelector("#analyzing h2").textContent = "Completed";
+      help.classList.add("hidden");
+      await sleep(1700);
+      if (reveal) reveal();
+      panel.classList.add("leaving");
+      await sleep(480);
+      panel.classList.remove("complete", "leaving");
+      panel.classList.add("hidden");
+      help.classList.remove("hidden");
+      document.querySelector("#analyzing h2").textContent = "Analyzing your contract";
+    }
+
+    function showFinishedJob(job) {
+      const result = job.result || {};
+      if (result.present_clauses || result.missing_clauses) {
+        showReport(result, job);
+        replacing = false;
+        return;
+      }
+      document.querySelector("#report").replaceChildren();
+    }
+
+    async function askForJob(jobId, options) {
+      const animate = Boolean(options && options.animate);
+      const title = (options && options.title) || "Analyzing your contract";
+      const ticket = options && options.ticket;
+      const response = await authed("/v1/jobs/" + encodeURIComponent(jobId), { headers: authHeader() });
+      if (!response.ok) await readError(response);
+      const job = await response.json();
+      if (ticket !== undefined && ticket !== vendorWatch) return;
+      if (job.status === "succeeded") {
+        if (animate) await playComplete(() => showFinishedJob(job));
+        else showFinishedJob(job);
+        return;
+      }
+      if (job.status === "failed") throw new Error(job.error || "The check failed");
+      const finished = await waitForJob(job.job_id, title);
+      await playComplete(() => showFinishedJob(finished));
+    }
+
+    function countCard(label, value, inactive, tone) {
+      const marks = { total: "#", compliant: "✓", missing: "–", review: "!", bad: "✕" };
+      const card = document.createElement("article");
+      card.className = "count " + (tone || "total") + (inactive ? " inactive" : "");
+      const mark = document.createElement("i");
+      mark.className = "mark";
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = marks[tone] || "#";
+      const number = document.createElement("strong");
+      number.textContent = String(value);
+      const name = document.createElement("span");
+      name.textContent = label;
+      card.append(mark, number, name);
+      return card;
+    }
+
+    function reportFilters(summary, nonCompliant) {
+      const wrap = document.createElement("div");
+      wrap.className = "report-filter";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "filter-toggle";
+      button.setAttribute("aria-expanded", "false");
+      button.setAttribute("aria-label", "Filter");
+      button.innerHTML = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 5h16l-6.2 7.2V19l-3.6-1.8v-5L4 5z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linejoin=\"round\"/></svg>";
+      const chips = document.createElement("div");
+      chips.className = "filter-chips";
+      const panel = document.createElement("div");
+      panel.className = "filter-panel hidden";
+      panel.setAttribute("role", "group");
+      panel.setAttribute("aria-label", "Filter findings");
+      const options = [
+        ["compliant", "Compliant", summary.matches_the_policy || 0],
+        ["missing", "Not in the contract", summary.not_in_the_contract || 0],
+        ["review", "Review", summary.needs_a_person_to_review || 0],
+        ["bad", "Non-compliant", nonCompliant],
+      ];
+      const selected = new Set();
+      const rows = {};
+      function paint() {
+        chips.replaceChildren();
+        options.forEach(([key, name]) => {
+          if (rows[key]) rows[key].classList.toggle("is-on", selected.has(key));
+          if (!selected.has(key)) return;
+          const chip = document.createElement("span");
+          chip.className = "filter-chip";
+          const text = document.createElement("span");
+          text.textContent = name;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.setAttribute("aria-label", "Remove " + name);
+          remove.textContent = "×";
+          remove.addEventListener("click", () => {
+            selected.delete(key);
+            paint();
+            apply();
+          });
+          chip.append(text, remove);
+          chips.append(chip);
+        });
+      }
+      function apply() {
+        const showAll = selected.size === 0;
+        document.querySelectorAll("#report .finding").forEach((row) => {
+          row.classList.toggle("hidden", !showAll && !selected.has(row.dataset.group));
+        });
+        const head = document.querySelector("#report .section-label");
+        if (!head) return;
+        const visible = [...document.querySelectorAll("#report .finding")].some((row) => row.dataset.bucket === "missing" && !row.classList.contains("hidden"));
+        head.classList.toggle("hidden", !visible);
+      }
+      options.forEach(([key, name, count]) => {
+        const choice = document.createElement("button");
+        choice.type = "button";
+        choice.className = "filter-choice";
+        choice.addEventListener("click", () => {
+          if (selected.has(key)) selected.delete(key);
+          else selected.add(key);
+          paint();
+          apply();
+        });
+        const title = document.createElement("span");
+        title.textContent = name;
+        const number = document.createElement("strong");
+        number.textContent = String(count);
+        choice.append(title, number);
+        rows[key] = choice;
+        panel.append(choice);
+      });
+      button.addEventListener("click", () => {
+        const closed = panel.classList.toggle("hidden");
+        button.setAttribute("aria-expanded", closed ? "false" : "true");
+      });
+      wrap.addEventListener("click", (event) => event.stopPropagation());
+      wrap.append(chips, button, panel);
+      return wrap;
+    }
+
+    function showReport(report, job) {
+      document.querySelector("#chooser").classList.add("hidden");
+      document.querySelector("#vendor-heading").classList.remove("hidden");
       const root = document.querySelector("#report");
       root.replaceChildren();
-      const present = document.createElement("h2");
-      present.textContent = "Clauses in the contract";
-      root.append(present);
-      (report.present_clauses || []).forEach((item) => root.append(finding(item)));
-      const missing = document.createElement("h2");
-      missing.textContent = "Missing from the contract";
-      root.append(missing);
-      (report.missing_clauses || []).forEach((item) => root.append(finding(item)));
+      const summary = report.summary || {};
+      const counts = document.createElement("div");
+      counts.className = "counts";
+      const nonCompliant = (summary.does_not_match_the_policy || 0)
+        + (summary.only_partly_in_the_contract || 0)
+        + (summary.conflicts_with_the_policy || 0);
+      counts.append(
+        countCard("Total", summary.total || 0, false, "total"),
+        countCard("Compliant", summary.matches_the_policy || 0, false, "compliant"),
+        countCard("Not in the contract", summary.not_in_the_contract || 0, report.missing_clause_check === "not_run", "missing"),
+        countCard("Review", summary.needs_a_person_to_review || 0, false, "review"),
+        countCard("Non-compliant", nonCompliant, false, "bad"),
+      );
+      root.append(counts);
+      root.append(reportFilters(summary, nonCompliant));
+      const meta = document.createElement("p");
+      meta.className = "report-meta";
+      const bits = [];
+      if (report.document_name) bits.push("File: " + report.document_name);
+      const taken = elapsed(job);
+      if (taken) bits.push("Time: " + taken);
+      meta.textContent = bits.join(" · ");
+      if (bits.length) root.append(meta);
+      const download = document.querySelector("#download-report");
+      const removeReport = document.querySelector("#delete-report-top");
+      download.classList.remove("hidden");
+      removeReport.classList.remove("hidden");
+      download.onclick = () => downloadReport(job.job_id).catch(showError);
+      removeReport.onclick = () => askConfirm("Delete report", "Delete this report?", () => deleteReport(selectedId));
+      const stream = document.createElement("div");
+      stream.className = "report-stream";
+      const presentItems = report.present_clauses || [];
+      presentItems.forEach((item) => stream.append(finding(item, "present")));
+      const missingItems = report.missing_clauses || [];
+      if (missingItems.length) {
+        const missing = document.createElement("h2");
+        missing.className = "section-label";
+        missing.textContent = "Missing from the contract";
+        stream.append(missing);
+        missingItems.forEach((item) => stream.append(finding(item, "missing")));
+      }
+      root.append(stream);
+      const shown = document.querySelector("#report");
+      shown.classList.remove("arrive");
+      void shown.offsetWidth;
+      shown.classList.add("arrive");
+      document.querySelector("#check-another").classList.remove("hidden");
     }
 
+    function elapsed(job) {
+      if (!job || !job.created_at || !job.updated_at) return "";
+      const seconds = Math.max(0, Math.round((Date.parse(job.updated_at) - Date.parse(job.created_at)) / 1000));
+      return Number.isFinite(seconds) ? seconds + " seconds" : "";
+    }
+
+    async function downloadReport(jobId) {
+      const response = await authed("/v1/jobs/" + encodeURIComponent(jobId) + "/report.pdf", { headers: authHeader() });
+      if (!response.ok) await readError(response);
+      const blob = await response.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "report.pdf";
+      link.click();
+    }
+
+    const eyeOpen = "<svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M1.5 8S4 4.5 8 4.5 14.5 8 14.5 8 12 11.5 8 11.5 1.5 8 1.5 8z\" fill=\"none\" stroke=\"#98a2b3\" stroke-width=\"1.2\"/><circle cx=\"8\" cy=\"8\" r=\"1.4\" fill=\"none\" stroke=\"#98a2b3\" stroke-width=\"1.2\"/></svg>";
+    const eyeOff = "<svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M2 2.5l12 11M6.2 6.4A2.2 2.2 0 0010 9.8M3.2 5.2C2 6.2 1.5 8 1.5 8S4 11.5 8 11.5c.9 0 1.7-.2 2.4-.5M6.4 4.7C6.9 4.6 7.4 4.5 8 4.5c4 0 6.5 3.5 6.5 3.5a12 12 0 01-1.6 1.8\" fill=\"none\" stroke=\"#98a2b3\" stroke-width=\"1.2\" stroke-linecap=\"round\"/></svg>";
+    const passwordButton = document.querySelector("#toggle-password");
+    passwordButton.innerHTML = eyeOpen;
+    const registerPasswordButton = document.querySelector("#toggle-register-password");
+    registerPasswordButton.innerHTML = eyeOpen;
+    registerPasswordButton.addEventListener("click", () => {
+      const input = document.querySelector("#register-password");
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      registerPasswordButton.innerHTML = show ? eyeOff : eyeOpen;
+      registerPasswordButton.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    });
+    passwordButton.addEventListener("click", () => {
+      const input = document.querySelector("#login-password");
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      passwordButton.innerHTML = show ? eyeOff : eyeOpen;
+      passwordButton.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    });
+    document.querySelector("#show-register").addEventListener("click", () => {
+      document.querySelector("#login-panel").classList.add("hidden");
+      document.querySelector("#register-panel").classList.remove("hidden");
+    });
+    document.querySelector("#show-login").addEventListener("click", () => {
+      document.querySelector("#register-panel").classList.add("hidden");
+      document.querySelector("#login-panel").classList.remove("hidden");
+    });
+    const sizeMenu = document.querySelector("#size-menu");
+    const sizeTrigger = document.querySelector("#size-trigger");
+    const sizeLabel = document.querySelector("#size-label");
+    const sizeValue = document.querySelector("#company-size");
+    sizeTrigger.addEventListener("click", () => {
+      const open = sizeMenu.classList.toggle("hidden");
+      sizeTrigger.setAttribute("aria-expanded", open ? "false" : "true");
+    });
+    sizeMenu.addEventListener("click", (event) => {
+      const choice = event.target.closest("button");
+      if (!choice) return;
+      sizeValue.value = choice.dataset.size;
+      sizeLabel.textContent = choice.dataset.size;
+      sizeLabel.classList.remove("placeholder");
+      sizeMenu.querySelectorAll("button").forEach((button) => {
+        button.setAttribute("aria-selected", button === choice ? "true" : "false");
+      });
+      sizeMenu.classList.add("hidden");
+      sizeTrigger.setAttribute("aria-expanded", "false");
+    });
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest(".size-pick")) {
+        sizeMenu.classList.add("hidden");
+        sizeTrigger.setAttribute("aria-expanded", "false");
+      }
+    });
     document.querySelector("#register-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const data = Object.fromEntries(new FormData(event.target));
+      const registerError = document.querySelector("#register-error");
+      if (!sizeValue.value) {
+        registerError.textContent = "Choose a company size";
+        sizeTrigger.focus();
+        return;
+      }
+      registerError.textContent = "";
       try {
         await saveSession(await fetch("/v1/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
+          body: JSON.stringify(Object.fromEntries(new FormData(event.target))),
         }));
-      } catch (error) { showError(error); }
+      } catch (error) { document.querySelector("#register-error").textContent = error && error.message ? error.message : String(error || ""); }
     });
-
     document.querySelector("#login-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const data = Object.fromEntries(new FormData(event.target));
       try {
         await saveSession(await fetch("/v1/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
+          body: JSON.stringify(Object.fromEntries(new FormData(event.target))),
         }));
       } catch (error) { showError(error); }
     });
+    function applyTheme(mode) {
+      const dark = mode === "dark";
+      if (dark) document.documentElement.dataset.theme = "dark";
+      else delete document.documentElement.dataset.theme;
+      try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (error) { /* keep the choice for this view */ }
+      const button = document.querySelector("#theme");
+      button.setAttribute("aria-pressed", dark ? "true" : "false");
+      button.setAttribute("aria-label", dark ? "Light mode" : "Dark mode");
+    }
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+    document.querySelector("#theme").addEventListener("click", () => {
+      applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+    });
 
+    function profileText(value) {
+      const text = (value || "").trim();
+      return text || "Not entered";
+    }
+
+    async function loadProfile() {
+      const response = await authed("/v1/company", { headers: authHeader() });
+      if (!response.ok) await readError(response);
+      const body = await response.json();
+      document.querySelector("#profile-name").textContent = profileText(body.name);
+      document.querySelector("#profile-industry").textContent = profileText(body.industry);
+      document.querySelector("#profile-size").textContent = profileText(body.company_size);
+      document.querySelector("#profile-headquarters").textContent = profileText(body.headquarters);
+      document.querySelector("#profile-website").textContent = profileText(body.website);
+      document.querySelector("#profile-form [name=business_email]").value = body.business_email || "";
+    }
+
+    function showProfile() {
+      rememberView("profile");
+      closeDrawer();
+      hideReportTools();
+      document.querySelector("#policy-view").classList.add("hidden");
+      document.querySelector("#vendor-view").classList.add("hidden");
+      document.querySelector("#profile-view").classList.remove("hidden");
+      document.querySelector("#open-policy").removeAttribute("aria-current");
+      document.querySelectorAll(".vendor-btn").forEach((button) => button.removeAttribute("aria-current"));
+      const note = document.querySelector("#profile-message");
+      note.textContent = "";
+      note.className = "error";
+      loadProfile().catch(showError);
+    }
+
+    document.querySelector("#avatar").addEventListener("click", showProfile);
+    document.querySelector("#profile-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.target));
+      const note = document.querySelector("#profile-message");
+      note.className = "error";
+      note.textContent = "";
+      try {
+        const response = await authed("/v1/company", {
+          method: "PATCH",
+          headers: { ...authHeader(), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            current_password: data.current_password || "",
+            business_email: data.business_email || "",
+            new_password: data.new_password || "",
+          }),
+        });
+        if (!response.ok) await readError(response);
+        const body = await response.json();
+        if (body.token) sessionStorage.setItem("token", body.token);
+        event.target.elements.current_password.value = "";
+        event.target.elements.new_password.value = "";
+        await loadProfile();
+        note.textContent = "";
+        notify("Saved.", "ok");
+      } catch (error) {
+        note.textContent = "";
+        showError(error);
+      }
+    });
     document.querySelector("#logout").addEventListener("click", () => {
       sessionStorage.clear();
       document.querySelector("#report").replaceChildren();
       showSession();
     });
-
+    document.querySelector("#welcome-upload").addEventListener("click", () => {
+      document.querySelector("#contract-file").click();
+    });
+    document.querySelector("#contract-file").addEventListener("change", () => {
+      const input = document.querySelector("#contract-file");
+      if (input.files && input.files.length) document.querySelector("#contract-form").requestSubmit();
+    });
+    document.querySelector("#open-policy").addEventListener("click", showPolicy);
+    document.querySelector("#back-policy").addEventListener("click", showPolicy);
+    document.querySelector("#open-menu").addEventListener("click", () => {
+      setSidebar(!sidebarOpen());
+    });
+    document.querySelector("#vendor-filter").addEventListener("click", () => {
+      const box = document.querySelector("#vendor-find");
+      const open = box.classList.contains("hidden");
+      box.classList.toggle("hidden");
+      document.querySelector("#vendor-filter").setAttribute("aria-expanded", open ? "true" : "false");
+      const input = document.querySelector("#vendor-query");
+      if (open) input.focus();
+      else {
+        input.value = "";
+        applyVendorFilter();
+      }
+    });
+    document.querySelector("#vendor-query").addEventListener("input", applyVendorFilter);
+    scrim.addEventListener("click", () => setSidebar(false));
+    wideQuery.addEventListener("change", () => {
+      sidebar.classList.remove("open");
+      scrim.classList.remove("show");
+      if (!wideScreen()) appShell.classList.remove("sidebar-closed");
+      paintSidebarButton();
+    });
+    paintSidebarButton();
+    document.querySelector("#add-vendor").addEventListener("click", () => {
+      document.querySelector("#vendor-dialog").showModal();
+    });
+    document.querySelector("#close-vendor").addEventListener("click", () => {
+      document.querySelector("#vendor-dialog").close();
+    });
+    document.querySelector("#close-confirm").addEventListener("click", () => {
+      confirmAction = null;
+      document.querySelector("#confirm-dialog").close();
+    });
+    document.querySelector("#confirm-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const action = confirmAction;
+      confirmAction = null;
+      if (action) {
+        try { await action(); }
+        catch (error) { showError(error); }
+      }
+    });
+    document.querySelector("#login-form").addEventListener("submit", () => {
+      document.querySelector("#login-expired").textContent = "";
+    }, true);
+    document.querySelector("#vendor-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.target));
+      try {
+        const response = await authed("/v1/vendors", {
+          method: "POST",
+          headers: { ...authHeader(), "Content-Type": "application/json" },
+          body: JSON.stringify({ name: data.name }),
+        });
+        if (!response.ok) await readError(response);
+        const created = await response.json();
+        event.target.reset();
+        document.querySelector("#vendor-dialog").close();
+        await loadVendors();
+        replacing = false;
+        showVendor(created);
+      } catch (error) { showError(error); }
+    });
+    document.querySelector("#policy-file").addEventListener("change", () => {
+      const input = document.querySelector("#policy-file");
+      const file = input.files && input.files[0];
+      document.querySelector("#policy-file-name").textContent = file ? file.name : "Choose a PDF or DOCX";
+      document.querySelector("#policy-file-row").classList.toggle("has-file", Boolean(file));
+      document.querySelector("#policy-submit").disabled = !file;
+    });
+    document.querySelector("#preview-policy").addEventListener("click", () => {
+      previewPolicy().catch(showError);
+    });
+    document.querySelector("#close-preview").addEventListener("click", () => {
+      closePolicyPreview();
+      document.querySelector("#preview-note").classList.add("hidden");
+    });
+    previewScroller().addEventListener("scroll", () => {
+      if (previewPaging) return;
+      document.querySelector("#policy-page").value = String(visiblePreviewPage());
+    });
+    document.querySelector("#policy-find").addEventListener("input", () => {
+      previewHits = findPreviewHits(document.querySelector("#policy-find").value);
+      previewHit = 0;
+      paintPreviewHits();
+      if (previewHits.length) showPreviewPage(previewHits[0][0].page);
+    });
+    document.querySelector("#find-prev").addEventListener("click", () => goToPreviewHit(previewHit - 1));
+    document.querySelector("#find-next").addEventListener("click", () => goToPreviewHit(previewHit + 1));
+    document.querySelector("#page-prev").addEventListener("click", () => {
+      showPreviewPage(Math.max(1, visiblePreviewPage() - 1));
+    });
+    document.querySelector("#page-next").addEventListener("click", () => {
+      const total = Number(document.querySelector("#policy-page").max) || 1;
+      showPreviewPage(Math.min(total, visiblePreviewPage() + 1));
+    });
+    document.querySelector("#policy-page").addEventListener("change", () => {
+      const total = Number(document.querySelector("#policy-page").max) || 1;
+      const asked = Number(document.querySelector("#policy-page").value);
+      const page = Math.min(total, Math.max(1, asked || 1));
+      document.querySelector("#policy-page").value = String(page);
+      showPreviewPage(page);
+    });
+    document.querySelector("#zoom-out").addEventListener("click", () => setPreviewZoom(previewZoom - 0.2));
+    document.querySelector("#zoom-in").addEventListener("click", () => setPreviewZoom(previewZoom + 0.2));
+    document.querySelector("#download-policy").addEventListener("click", () => {
+      downloadPolicy().catch(showError);
+    });
     document.querySelector("#policy-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const progress = document.querySelector("#policy-progress");
+      const submit = document.querySelector("#policy-submit");
+      progress.classList.remove("hidden");
+      submit.disabled = true;
       try {
-        const response = await fetch("/v1/policies", { method: "POST", headers: authHeader(), body: new FormData(event.target) });
+        const response = await authed("/v1/policies", { method: "POST", headers: authHeader(), body: new FormData(event.target) });
         if (!response.ok) await readError(response);
         const body = await response.json();
-        const job = await waitForJob(body.job_id);
-        const indexed = (job.result && job.result.document_ids) || [];
-        message.textContent = "Policy indexed. " + indexed.join(", ");
+        const job = await pollJob(body.job_id);
+        showFinishedJob(job);
+        notify("The company policy is ready.", "ok");
+        resetPolicyPicker();
+        await loadPolicy();
       } catch (error) { showError(error); }
+      finally {
+        progress.classList.add("hidden");
+        submit.disabled = document.querySelector("#policy-file").files.length === 0;
+      }
     });
-
+    document.addEventListener("click", () => {
+      const panel = document.querySelector(".filter-panel");
+      const button = document.querySelector(".filter-toggle");
+      if (panel) panel.classList.add("hidden");
+      if (button) button.setAttribute("aria-expanded", "false");
+    });
+    document.querySelector("#check-another").addEventListener("click", () => {
+      replacing = true;
+      const vendor = vendors.find((item) => item.vendor_id === selectedId);
+      if (vendor) showVendor(vendor);
+    });
     document.querySelector("#contract-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      message.textContent = "Contract stored. Waiting for the worker.";
+      if (!selectedId) return;
       try {
-        const response = await fetch("/v1/checks", { method: "POST", headers: authHeader(), body: new FormData(event.target) });
+        const response = await authed("/v1/vendors/" + encodeURIComponent(selectedId) + "/contract", {
+          method: "POST",
+          headers: authHeader(),
+          body: new FormData(event.target),
+        });
         if (!response.ok) await readError(response);
         const accepted = await response.json();
+        if (accepted.existing) notify("Opening the saved check.", "ok");
         const job = await waitForJob(accepted.job_id);
-        showReport(job.result || {});
-        message.textContent = "";
-      } catch (error) { showError(error); }
+        await playComplete(() => showFinishedJob(job));
+        await loadVendors();
+      } catch (error) {
+        showError(error);
+        const panel = document.querySelector("#analyzing");
+        panel.classList.remove("complete", "leaving");
+        panel.classList.add("hidden");
+        document.querySelector("#vendor-heading").classList.remove("hidden");
+        document.querySelector("#chooser").classList.remove("hidden");
+      }
+    });
+    const drop = document.querySelector("#contract-form");
+    drop.addEventListener("dragover", (event) => event.preventDefault());
+    drop.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const file = event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) return;
+      const input = document.querySelector("#contract-file");
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      drop.requestSubmit();
+    });
+    const heading = document.querySelector("#clause-form [name=clause_type]");
+    const clauseText = document.querySelector("#clause-form [name=clause_text]");
+    function showLimit(input, countId, lineId, max) {
+      document.querySelector(countId).textContent = String(input.value.length);
+      document.querySelector(lineId).classList.toggle("at-limit", input.value.length >= max);
+    }
+    heading.addEventListener("input", () => showLimit(heading, "#heading-count", "#heading-count-line", 255));
+    clauseText.addEventListener("input", () => showLimit(clauseText, "#text-count", "#text-count-line", 10000));
+    document.querySelector("#open-clause").addEventListener("click", () => {
+      document.querySelector("#clause-dialog").showModal();
+      heading.focus();
+    });
+    document.querySelector("#close-clause").addEventListener("click", () => {
+      document.querySelector("#clause-dialog").close();
+    });
+    document.querySelector("#clause-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!selectedId) return;
+      const data = Object.fromEntries(new FormData(event.target));
+      try {
+        const panel = document.querySelector("#analyzing");
+        panel.classList.remove("complete", "leaving", "hidden");
+        document.querySelector("#analyzing h2").textContent = "Analyzing your clause";
+        document.querySelector("#analyzing-help").classList.remove("hidden");
+        document.querySelector("#job-steps").classList.add("hidden");
+        document.querySelector("#clause-dialog").close();
+        document.querySelector("#chooser").classList.add("hidden");
+        document.querySelector("#vendor-heading").classList.add("hidden");
+        const response = await authed("/v1/vendors/" + encodeURIComponent(selectedId) + "/clause", {
+          method: "POST",
+          headers: { ...authHeader(), "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        if (!response.ok) await readError(response);
+        const accepted = await response.json();
+        document.querySelector("#clause-dialog").close();
+        event.target.reset();
+        showLimit(heading, "#heading-count", "#heading-count-line", 255);
+        showLimit(clauseText, "#text-count", "#text-count-line", 10000);
+        document.querySelector("#chooser").classList.add("hidden");
+        document.querySelector("#vendor-heading").classList.add("hidden");
+        await askForJob(accepted.job_id, { animate: true, title: "Analyzing your clause" });
+        await loadVendors();
+      } catch (error) {
+        showError(error);
+        const panel = document.querySelector("#analyzing");
+        panel.classList.remove("complete", "leaving");
+        panel.classList.add("hidden");
+        document.querySelector("#vendor-heading").classList.remove("hidden");
+        document.querySelector("#chooser").classList.remove("hidden");
+      }
     });
 
+    setInterval(() => {
+      const token = sessionStorage.getItem("token");
+      if (token && tokenExpiry(token) <= Date.now()) expireSession();
+    }, 15000);
     showSession();
   </script>
 </body>

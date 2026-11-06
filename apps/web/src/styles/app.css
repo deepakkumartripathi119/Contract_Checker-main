@@ -1,0 +1,21 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Segoe UI", Candara, sans-serif; color: #1c1733; background: #f7f6fe; }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+.shell { min-height: 100vh; }
+.shell main { margin-left: 17.5rem; min-height: 100vh; padding: 0 1rem 2rem; }
+.shell.rail main { margin-left: 4.25rem; }
+@media (max-width: 1024px) {
+  .shell main, .shell.rail main { margin-left: 4.25rem; padding: 0 0.7rem 2rem; }
+  .choice-grid, .policy-row { grid-template-columns: 1fr; }
+  .top { flex-wrap: wrap; }
+}
+@media (max-width: 520px) {
+  .auth-card { width: calc(100% - 1rem); margin: 0.8rem auto; padding: 1.2rem 0.9rem; }
+  h1 { font-size: 1.4rem; }
+}
+.top { display: flex; justify-content: flex-end; gap: 0.7rem; align-items: center; padding: 0.95rem 1.4rem; }
+.primary { background: #5653fa; color: #fff; border: 0; border-radius: 0.9rem; padding: 0.82rem 1rem; width: 100%; font-weight: 700; }
+.quiet { color: #6d6788; }
+.error { color: #9b2c2c; }
+h1 { letter-spacing: -0.03em; }

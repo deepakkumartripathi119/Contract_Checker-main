@@ -1,0 +1,6 @@
+.policy-page { width: min(44rem, 100%); margin: 0.6rem auto 0; display: grid; gap: 0.85rem; }
+@media (max-width: 520px) { .policy-page { width: 100%; } }
+.policy-intro { text-align: center; }
+.policy-card { background: #fff; border: 1px solid #ddd6ff; border-radius: 1.15rem; padding: 1.05rem 1.15rem; }
+.uploaded { color: #178a4a; font-weight: 650; }
+.note { background: #f3efff; color: #3d3568; border-radius: 0.95rem; padding: 0.85rem 1rem; }

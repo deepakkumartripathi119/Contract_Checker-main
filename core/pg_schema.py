@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
     "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS login_name TEXT",
     "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS password_hash TEXT",
     "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS business_email TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS industry TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS company_size TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS headquarters TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE tenant_configs ADD COLUMN IF NOT EXISTS website TEXT NOT NULL DEFAULT ''",
     """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_login_name
 ON tenant_configs (login_name)

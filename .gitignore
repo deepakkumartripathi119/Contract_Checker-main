@@ -22,6 +22,7 @@ myenv/
 .env
 .env.*
 !.env.example
+deploy/cloud.env
 
 # VS Code settings (optional)
 .vscode/

@@ -142,6 +142,7 @@ def _missing_clauses_reducer(
 
 class AgentState(TypedDict, total=False):
     org_id: str
+    job_id: str
     contract: Annotated[List[str], add]
     extracted_clauses: Annotated[List[Clause], add]
     answer: Annotated[List[ClauseComplianceResult], add]

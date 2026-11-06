@@ -330,6 +330,25 @@ class TestJobAndFileEdges(unittest.TestCase):
         self.assertEqual(get_job("nexify", waiting)["status"], "running")
         self.assertIsNone(claim_next())
 
+    def test_a_stale_running_job_is_claimed_again(self):
+        job_id = create_job(
+            "nexify",
+            "contract.submitted",
+            [{"document_id": "stale", "filename": "c.pdf", "object_key": "nexify/x/stale.pdf"}],
+        )
+        self.assertEqual(claim_next()["job_id"], job_id)
+        self.assertIsNone(claim_next())
+        connection = sqlite3.connect(os.environ["SQLITE_DB_PATH"])
+        connection.execute(
+            "UPDATE jobs SET updated_at = '2000-01-01 00:00:00' WHERE job_id = ?",
+            (job_id,),
+        )
+        connection.commit()
+        connection.close()
+        again = claim_next()
+        self.assertEqual(again["job_id"], job_id)
+        self.assertEqual(get_job("nexify", job_id)["status"], "running")
+
     def test_two_workers_cannot_claim_the_same_sqlite_job(self):
         job_id = create_job(
             "nexify",
@@ -501,6 +520,157 @@ class TestEdgeConfig(unittest.TestCase):
         self.assertNotIn("API_UPSTREAM_2", text)
 
 
+class TestS3ObjectStore(unittest.TestCase):
+    def test_a_missing_bucket_is_rejected(self):
+        from core.object_store import S3ObjectStore
+
+        with patch.dict(os.environ, {"S3_BUCKET": ""}):
+            with self.assertRaises(RuntimeError) as caught:
+                S3ObjectStore()
+        self.assertIn("S3_BUCKET", str(caught.exception))
+
+    def test_put_and_get_use_the_bucket_key_and_reject_a_parent_path(self):
+        from io import BytesIO
+        from unittest.mock import MagicMock
+
+        from core.object_store import get_object_store
+
+        client = MagicMock()
+        client.get_object.return_value = {"Body": BytesIO(b"%PDF-1.4 stored")}
+        with patch.dict(
+            os.environ,
+            {
+                "OBJECT_STORE_BACKEND": "s3",
+                "S3_BUCKET": "contract-checker",
+                "S3_REGION": "us-east-1",
+                "S3_ENDPOINT_URL": "",
+                "S3_ACCESS_KEY_ID": "",
+                "S3_SECRET_ACCESS_KEY": "",
+            },
+        ):
+            with patch("boto3.client", return_value=client) as factory:
+                store = get_object_store()
+                store.put("acme/policies/a.pdf", b"%PDF-1.4 stored")
+                self.assertEqual(store.get("acme/policies/a.pdf"), b"%PDF-1.4 stored")
+                with self.assertRaises(ValueError):
+                    store.put("../outside.pdf", b"nope")
+        self.assertEqual(factory.call_args.args[0], "s3")
+        self.assertEqual(client.put_object.call_args.kwargs["Bucket"], "contract-checker")
+        self.assertEqual(client.put_object.call_args.kwargs["Key"], "acme/policies/a.pdf")
+        self.assertEqual(client.put_object.call_args.kwargs["Body"], b"%PDF-1.4 stored")
+        client.put_object.assert_called_once()
+        self.assertIsNone(factory.call_args.kwargs.get("config"))
+
+    def test_a_custom_endpoint_uses_path_style_addresses(self):
+        from unittest.mock import MagicMock
+
+        from core.object_store import S3ObjectStore
+
+        with patch.dict(
+            os.environ,
+            {
+                "S3_BUCKET": "contract-checker",
+                "S3_ENDPOINT_URL": "http://minio:9000",
+                "S3_ACCESS_KEY_ID": "contract",
+                "S3_SECRET_ACCESS_KEY": "contractsecret",
+                "S3_REGION": "us-east-1",
+            },
+        ):
+            with patch("boto3.client", return_value=MagicMock()) as factory:
+                S3ObjectStore()
+        self.assertEqual(factory.call_args.kwargs["endpoint_url"], "http://minio:9000")
+        self.assertEqual(
+            factory.call_args.kwargs["config"].s3["addressing_style"],
+            "path",
+        )
+
+
+class TestCompanyBudget(unittest.TestCase):
+    def test_each_company_has_its_own_minute(self):
+        from core.company_budget import BudgetExceeded, charge_company
+
+        fake = fakeredis.FakeRedis(decode_responses=True)
+        for _ in range(3):
+            charge_company("nexify", client=fake, limit=3)
+        with self.assertRaises(BudgetExceeded):
+            charge_company("nexify", client=fake, limit=3)
+        charge_company("other", client=fake, limit=3)
+
+    def test_sqlite_mode_does_not_count(self):
+        from core.company_budget import charge_company
+
+        with patch.dict(os.environ, {"CACHE_BACKEND": "sqlite"}):
+            for _ in range(5):
+                charge_company("nexify", limit=1)
+
+
+class TestCloudStartup(unittest.TestCase):
+    def test_s3_and_redis_must_be_named_before_the_server_starts(self):
+        from scripts.prepare_runtime import prepare
+
+        with patch.dict(
+            os.environ,
+            {
+                "OBJECT_STORE_BACKEND": "s3",
+                "S3_BUCKET": "",
+                "CACHE_BACKEND": "sqlite",
+                "VECTOR_STORE_BACKEND": "sqlite",
+            },
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                prepare()
+        self.assertIn("S3_BUCKET", str(caught.exception))
+
+        with patch.dict(
+            os.environ,
+            {
+                "CACHE_BACKEND": "redis",
+                "REDIS_URL": "",
+                "OBJECT_STORE_BACKEND": "local",
+                "VECTOR_STORE_BACKEND": "sqlite",
+            },
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                prepare()
+        self.assertIn("REDIS_URL", str(caught.exception))
+
+    def test_a_silent_redis_stops_startup(self):
+        from scripts.prepare_runtime import prepare
+
+        class Silent:
+            def ping(self):
+                raise ConnectionError("down")
+
+            def close(self):
+                return None
+
+        with patch.dict(
+            os.environ,
+            {
+                "CACHE_BACKEND": "redis",
+                "REDIS_URL": "redis://127.0.0.1:6399/0",
+                "OBJECT_STORE_BACKEND": "local",
+                "VECTOR_STORE_BACKEND": "sqlite",
+                "OBJECT_STORE_PATH": os.path.join(tempfile.gettempdir(), "cloud-start-objects"),
+                "SQLITE_DB_PATH": os.path.join(tempfile.gettempdir(), "cloud-start.db"),
+            },
+        ):
+            with patch("redis.Redis.from_url", return_value=Silent()):
+                with self.assertRaises(RuntimeError) as caught:
+                    prepare()
+        self.assertIn("Redis did not answer", str(caught.exception))
+
+    def test_the_cloud_compose_file_does_not_start_a_database(self):
+        text = (
+            Path(__file__).resolve().parents[1] / "docker-compose.cloud.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("OBJECT_STORE_BACKEND: s3", text)
+        self.assertIn("CACHE_BACKEND: redis", text)
+        self.assertIn("deploy/cloud.env", text)
+        self.assertNotIn("pgvector/pgvector", text)
+        self.assertNotIn("redis:7-alpine", text)
+
+
 @unittest.skipUnless(_postgres_is_up(), "Postgres is not running on 127.0.0.1:5432")
 class TestPostgresJobEdges(unittest.TestCase):
     database = "contract_checker_edge"
@@ -612,3 +782,26 @@ class TestPostgresJobEdges(unittest.TestCase):
         winners = [item["job_id"] for item in claimed if item is not None]
         self.assertEqual(sorted(winners), sorted(job_ids))
         self.assertIsNone(claim_next())
+
+    def test_a_stale_running_job_is_claimed_again(self):
+        from sqlalchemy import create_engine, text
+
+        job_id = create_job(
+            "nexify",
+            "contract.submitted",
+            [{"document_id": "stale", "filename": "c.pdf", "object_key": "nexify/x/stale.pdf"}],
+        )
+        self.assertEqual(claim_next()["job_id"], job_id)
+        self.assertIsNone(claim_next())
+        engine = create_engine(os.environ["DATABASE_URL"])
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("UPDATE jobs SET updated_at = now() - interval '1 day' WHERE job_id = :job_id"),
+                    {"job_id": job_id},
+                )
+        finally:
+            engine.dispose()
+        again = claim_next()
+        self.assertEqual(again["job_id"], job_id)
+        self.assertEqual(get_job("nexify", job_id)["status"], "running")

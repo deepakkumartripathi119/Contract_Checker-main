@@ -1,0 +1,15 @@
+.auth-card {
+  width: min(26rem, 100%);
+  margin: 2rem auto;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 1.6rem;
+  padding: 2rem 1.7rem 1.5rem;
+  text-align: center;
+  box-shadow: 0 18px 50px rgba(40, 24, 90, 0.08);
+}
+.auth-card .brand { justify-content: center; }
+.auth-card input, .auth-card select {
+  width: 100%; margin-top: 0.7rem; padding: 0.78rem 0.9rem;
+  border-radius: 0.85rem; border: 1px solid #e7e1f6; background: #fff;
+}
+.switch button { background: none; border: 0; color: #5653fa; font-weight: 700; padding: 0; }

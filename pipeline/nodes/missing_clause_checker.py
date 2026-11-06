@@ -169,6 +169,7 @@ def _decided_clauses(answers: list) -> list[dict]:
             "title": _normalize_clause_text(
                 answer.get("clause_title") or answer.get("clause_type") or ""
             ),
+            "quote": _normalize_clause_text(answer.get("exact_policy_quote") or ""),
         })
     return [row for row in decided if row["text"] or row["title"]]
 
@@ -180,6 +181,12 @@ def _requirement_already_decided(result, requirement, decided_clauses: list[dict
     detected by requiring two shared title words, so "Payment" does not hide
     a separate late-penalty requirement.
     """
+    source = _normalize_clause_text(getattr(requirement, "source_text", "") or "")
+    if len(source) >= 40:
+        for row in decided_clauses:
+            quote = row.get("quote") or ""
+            if len(quote) >= 40 and (quote in source or source in quote):
+                return True
     matched = _normalize_clause_text(result.matched_clause_text or "")
     if result.coverage_status != "not_covered" and matched:
         if any(
@@ -316,6 +323,7 @@ def missing_clause_checker(state: AgentState) -> dict:
                     "reason": reason,
                     "compliant": False,
                     "compliance_status": compliance_status,
+                    "coverage_status": res.coverage_status,
                     "clauses_internal": [f"{cleaned_quote} — `{sec.breadcrumb}`"],
                     "suggested_revision": (
                         f"Add '{label}' to the vendor contract: \"{cleaned_quote}\""
